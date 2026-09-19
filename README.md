@@ -205,3 +205,5 @@ TROUBLESHOOTING
 - Antivirus warning: the program is packed with PyInstaller, which some antiviruses flag by mistake.
   The full source code is in the src folder.
 - Something else: send the file tq_together.log from the data folder.
+
+Nexusmods page: https://www.nexusmods.com/titanquestanniversaryedition/mods/127
