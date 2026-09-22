@@ -1,4 +1,4 @@
-TQ Together 1.0.0
+TQ Together 1.0.1
 Your heroes as companions - Titan Quest Anniversary Edition
 ===========================================================
 
@@ -61,6 +61,10 @@ What is NOT transferred
 Deleted heroes
   When you delete a hero, their companion disappears with the next start of TQ Together. Every eidolon and shard
   of that hero - in rings, inventory or stash - becomes a "Faded Eidolon" without any effect, so saves stay valid.
+  Once no item anywhere refers to a deleted hero any more, their leftovers are removed completely (1.0.1+).
+  Checked: every save (and its Backup folder), the transfer stash (and mod stashes), archived heroes,
+  "Titan Quest Backup" and TQVault vaults. Found anywhere means kept.
+  More places: ScanPaths=folder1;folder2 in TQTogether.ini.
 
 
 EPIC / LEGENDARY RINGS

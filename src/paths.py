@@ -4,7 +4,7 @@ Works the same from the scripts and from the packed TQTogether.exe."""
 import os, sys, re, glob
 
 APP = 'TQ Together'
-VERSION = '1.0.0'
+VERSION = '1.0.1'
 STEAM_APPID = '475150'
 BASE_SUFFIX = '.tqtogether-base'     # untouched copy of every game file we replace
 

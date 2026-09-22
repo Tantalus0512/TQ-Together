@@ -72,6 +72,8 @@ def check(build, base_arz, log=print):
     if len(keys) != len(set(keys)):
         bad.append('%d duplicate record entries in the database' % (len(keys) - len(set(keys))))
     mine = {k: R[k] for k in keys if k.startswith(NS)}
+    if B.MARKER not in R:
+        bad.append('marker record %s missing: the installer would not recognise the installed database' % B.MARKER)
     # 1. names lowercase, every .dbr reference resolves (the game looks up lowercased paths)
     for k, r in mine.items():
         if r['name'] != r['name'].lower():

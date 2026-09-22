@@ -12,7 +12,8 @@ on every launch, so levelling that character levels the companion too.
   - "Eidolon: <name>": a 2-shard relic that fits rings only (two rings = at most two companions); completing it
     rolls the completion bonus (an affix) that grants "Summon Companion: <name>" - like vanilla relic bonuses
     that grant Wraith Lord etc. Drops only from LEGENDARY electrum orbs (ORB_CHANCE per orb), vanilla odds kept
-  - deleted characters leave inert "faded" records (registry.json) so items holding their relic stay valid
+  - deleted characters leave inert "faded" records (registry.json) so items holding their relic stay valid;
+    once nothing anywhere refers to them (saves, stashes, TQVault, backups: scan_roots) they are dropped
 Checks: verify_companions.py (run by --install; ALL CHECKS PASSED or nothing is installed).
 """
 import os, sys, re, struct, glob, hashlib, collections, json
@@ -107,6 +108,9 @@ RELIC_LOOK_SRC = 'records\\xpack\\item\\relics\\01_act4_shadeofhektor.dbr'      
 SUMMON_FX_SRC = 'records\\skills\\spirit\\wraithlordsummons.dbr'
 RUN_SPEED = 1.5        # player base 1.33, vanilla doppel 1.2, Ylva 1.4; the player's +move speed gear outruns 1.33
 REGISTRY = os.path.join(paths.data_dir(), 'registry.json')   # every companion ever built: cid -> name
+# inert record that is ALWAYS built: the installer recognises its own database by records under NS, and with no
+# companion and no tombstone left there would be none (installed db taken for a game update, 1.0.1 lifecycle test)
+MARKER = NS + 'tqtogether_marker.dbr'
 LOG = []
 def log(*a):
     s = ' '.join(str(x) for x in a); print(s, flush=True); LOG.append(s)
@@ -617,7 +621,7 @@ class Builder(object):
         setv(relic, 'FileDescription', 'TQMod companion relic: %s%s' % (name, '' if sk is not None else ' (faded)'))
         return relic
 
-    def tombstone(self, cid, name):
+    def tombstone(self, cid, name, why='save deleted'):
         """a deleted character: keep only inert records that items in saves may still point at"""
         sk = self.clone(SUMMON_SRC, NS + '%s_summon.dbr' % cid)
         for vn, vt, vals in list(sk['vars']):
@@ -628,7 +632,7 @@ class Builder(object):
              'Героя %s больше нет.' % name, '%s is gone.' % name))
         self.make_ring(cid, name, None)
         self.make_relic(cid, name, None)
-        log('  tombstone: %s (save deleted)' % name)
+        log('  tombstone: %s (%s)' % (name, why))
 
     def fast_controller(self, kind='normal'):
         name = NS + ('controller_companion.dbr' if kind == 'normal' else 'controller_companion_%s.dbr' % kind)
@@ -736,14 +740,35 @@ class Builder(object):
                 rings.append(r)
                 active[r.split(BS)[-1][:-len('_ring.dbr')]] = self.report[-1][0]
         reg = dict(self.registry)
-        # heroes whose eidolons/rings/summons the saves still hold, even if the registry was lost
-        for cid in referenced_cids():
+        refs = referenced_cids()
+        # heroes whose eidolons/rings/summons something still holds, even if the registry was lost
+        for cid in refs:
             reg.setdefault(cid, cid)
+        # a hero whose save folder is still there keeps his records even if he is not a companion right now
+        present = {d.lower() for d in os.listdir(SAVES) if os.path.isfile(os.path.join(SAVES, d, 'Player.chr'))} \
+            if os.path.isdir(SAVES) else set()
+        has_folder = {cid for folder, cid in self.folders.items() if folder in present}
+        gone = []
         for cid, name in sorted(reg.items()):
-            if cid not in active:
-                self.tombstone(cid, name)
+            if cid in active:
+                continue
+            if cid in refs:
+                self.tombstone(cid, name, 'save deleted, kept: referenced by %s' % refs[cid])
+            elif cid in has_folder:
+                self.tombstone(cid, name, 'not a companion right now, save folder still there')
+            else:
+                gone.append(cid)
+                log('  removed: %s (deleted, no item anywhere refers to it)' % name)
+        for cid in gone:
+            del reg[cid]
+        self.folders = {f: c for f, c in self.folders.items() if c not in gone}
         reg.update(active)
         self.registry = reg
+        m = self.clone(RELIC_BONUS_SRC, MARKER)
+        for vn, vt, vals in list(m['vars']):
+            if vn not in ('templateName', 'Class'):
+                delv(m, vn)
+        setv(m, 'FileDescription', 'TQ Together marker: this database was built by TQ Together (inert, never loaded)')
         self.electrum(self.relics)   # 19.09: nothing on sale any more - eidolons only from legendary electrum orbs
         os.makedirs(OUT, exist_ok=True)
         for lg in ('ru', 'en'):
@@ -783,15 +808,42 @@ def save_registry(companions, folders):
     os.replace(tmp, REGISTRY)
 
 
-def referenced_cids():
-    """cids of our records that any save refers to (relic / ring / summon), straight from the Player.chr bytes"""
-    out = set()
-    pat = re.compile(re.escape(NS.encode()) + rb'([a-z0-9_]+?)_(?:relic_bonus|relic|ring|summon)\.dbr', re.I)
-    for p in glob.glob(os.path.join(SAVES, '_*', 'Player.chr')):
-        try:
-            out.update(m.group(1).decode().lower() for m in pat.finditer(open(p, 'rb').read()))
-        except Exception:
-            pass
+SCAN_EXT = ('.chr', '.dxb', '.dxg', '.vault', '.json')
+# our record names as items store them: backslashes in saves, doubled in TQVault's JSON, maybe forward slashes
+REF_PAT = re.compile(rb'records(?:\\\\|\\|/)+tqmod(?:\\\\|\\|/)+companions(?:\\\\|\\|/)+'
+                     rb'([a-z0-9_]+?)_(?:relic_bonus|relic|ring|summon)\.dbr', re.I)
+
+
+def scan_roots():
+    """every place an item of ours can sit: SaveData (heroes and their Backup folders, custom-quest heroes, the
+    transfer stash incl. mod stashes, archived heroes), the game's own backup, TQVault vaults, Legendary Start
+    backups, plus ScanPaths=dir1;dir2 from TQTogether.ini"""
+    user = paths.tq_user_dir()
+    mg = os.path.dirname(user)
+    roots = [os.path.dirname(SAVES), os.path.join(mg, 'Titan Quest Backup'),
+             os.path.join(mg, 'Titan Quest', 'TQVaultData'), os.path.join(mg, 'TQVaultData'),
+             os.path.join(user, 'Legendary Start')]
+    roots += [p.strip() for p in paths.settings().get('scanpaths', '').split(';') if p.strip()]
+    return [r for r in roots if os.path.isdir(r)]
+
+
+def referenced_cids(roots=None):
+    """{cid: first file that refers to it} for every relic / ring / summon record of ours that anything still holds.
+    Heroes found here keep their records (a tombstone at least): deleting records under an item breaks the item."""
+    out = {}
+    for root in (scan_roots() if roots is None else roots):
+        for dp, dn, fns in os.walk(root):
+            for fn in fns:
+                if not fn.lower().endswith(SCAN_EXT):
+                    continue
+                p = os.path.join(dp, fn)
+                try:
+                    with open(p, 'rb') as f:
+                        data = f.read()
+                except OSError:
+                    continue
+                for m in REF_PAT.finditer(data):
+                    out.setdefault(m.group(1).decode().lower(), p)
     return out
 
 
@@ -807,6 +859,8 @@ def inputs_fingerprint():
         except Exception as e:
             data = {'path': path, 'error': str(e), 'size': os.path.getsize(path)}
         h.update(json.dumps(data, sort_keys=True, default=str).encode('utf-8'))
+    # which deleted heroes are still referenced decides what is kept and what is cleaned up
+    h.update(json.dumps(sorted(referenced_cids())).encode('utf-8'))
     return h.hexdigest()
 
 
