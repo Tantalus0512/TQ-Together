@@ -51,6 +51,7 @@ Run from source without building: `py -3 src/tq_together.py [--uninstall | --reb
 | `src/arz_lazy.py`, `src/arz.py` | reader/writer of the game's `.arz` database |
 | `src/chr_reader.py` | reader of `Player.chr` save files |
 | `src/orb_odds.py` | exact drop odds of the electrum orbs (used by the self-check) |
+| `src/hero_power.py` | a hero's damage per second as the character window shows it (auto difficulty) |
 
 ## License
 

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Static checks of build\\database.arz (companions). Run after every build: must print ALL CHECKS PASSED.
 Each check = a failure that already happened once or an audit finding (18.09)."""
-import sys, re
+import sys, re, collections
 sys.path.insert(0, r'D:\TQMod\tools')   # development only; the exe bundles these
 
 from arz_lazy import LazyArz
@@ -26,14 +26,23 @@ def key(x):
     return x.lower().replace('/', BS)
 
 
+# the doppelganger pet's own monster skills (records\xpack2\skills\item skills\pet\doppelgangerpet.dbr skillName8/15-17)
+DOPPEL_ONLY = {key(x) for x in (
+    'records\\xpack2\\skills\\monster skills\\passive_buffs\\doppelganger_reflect.dbr',
+    'Records\\XPack\\Skills\\MonsterSkills\\Passive\\ElementalResistance_10xLevel.dbr',
+    'records\\skills\\boss skills\\hero_conversionimmunity.dbr',
+    'records\\skills\\monster skills\\defense\\resist_ghost.dbr')}
+
+
 
 
 def base_summary(base_arz):
-    """what the checks need from the untouched database - value types per field name and the electrum orb loot
-    records - cached once per base (loading the whole base again cost ~40 s per build)"""
+    """what the checks need from the untouched database - value types per field name, the electrum orb loot
+    records and (1.3.1) the references that are already broken in the game itself - cached once per base (loading
+    the whole base again cost ~40 s per build)"""
     import os, pickle, collections, paths
     st = os.stat(base_arz)
-    cache = os.path.join(paths.data_dir(), 'cache', 'summary_%d_%d.pickle' % (st.st_size, int(st.st_mtime)))
+    cache = os.path.join(paths.data_dir(), 'cache', 'summary2_%d_%d.pickle' % (st.st_size, int(st.st_mtime)))
     if os.path.exists(cache):
         try:
             with open(cache, 'rb') as f:
@@ -42,15 +51,21 @@ def base_summary(base_arz):
             pass
     vt_of = collections.defaultdict(collections.Counter)
     orb_loot = {}
+    names, refs = set(), set()
     for k, r in LazyArz.load(base_arz).records.stream():     # one pass, nothing kept in memory
+        names.add(k)
         for vn, vt, vals in r['vars']:
             vt_of[vn][vt] += 1
+            if vt == 2:
+                refs.update(key(x) for x in vals if isinstance(x, str) and x.lower().endswith('.dbr'))
         if 'electrumorbs' in k and k.endswith('_loot.dbr'):
             orb_loot[k] = r
-    out = {'vt_of': {k: dict(c) for k, c in vt_of.items()}, 'orb_loot': orb_loot}
+    # e.g. Hou Yi's bow: dropSoundWater -> a sound record the game never shipped; the game lives with it, and a
+    # baked copy of the bow carries the same reference
+    out = {'vt_of': {k: dict(c) for k, c in vt_of.items()}, 'orb_loot': orb_loot, 'broken_in_game': refs - names}
     os.makedirs(os.path.dirname(cache), exist_ok=True)
     import glob
-    for old in glob.glob(os.path.join(os.path.dirname(cache), 'summary_*.pickle')):   # only the current base counts
+    for old in glob.glob(os.path.join(os.path.dirname(cache), 'summary*.pickle')):    # only the current base counts
         try:
             os.remove(old)
         except OSError:
@@ -60,9 +75,251 @@ def base_summary(base_arz):
     return out
 
 
-def check(build, base_arz, log=print):
+def string_table(path):
+    """1.3.4, the written database file as the engine reads it: Engine.dll 0x102906d0 gives a string table entry an id
+    only if its bytes are new and finds records by that id, so a single repeated entry makes every record after it
+    unreachable (25.09: Эйлин's eidolon vanished from a ring because 'TQMod companion relic: ?????' was also Темун's)"""
+    import struct
+    raw = open(path, 'rb').read()
+    st_start = struct.unpack_from('<I', raw, 16)[0]        # header <2H5i: magic, version, rt start/size/count, st start
+    n = struct.unpack_from('<i', raw, st_start)[0]
+    p, seen, dups = st_start + 4, set(), []
+    for i in range(n):
+        l = struct.unpack_from('<i', raw, p)[0]
+        s = raw[p + 4:p + 4 + l]
+        p += 4 + l
+        if s in seen:
+            dups.append((i, s))
+        seen.add(s)
+    return ['database string table repeats %r at entry %d - the game would not find the records after it' % (s[:60], i)
+            for i, s in dups[:5]]
+
+
+def stat_values(rec, idx=0, only=None):
+    """{attribute value field: number} of a record - the summable part (no chance/duration/flags, no names);
+    augment levels without their slot number (a level may move to the other slot); 1.3.2: a level whose slot names no
+    skill / mastery counts as nothing - the game gives nothing for it (vanilla Archer's Prowess ring: two such levels),
+    and the builder may put a real bonus into that empty slot"""
+    out = collections.Counter()
+    for f, (vt, val) in B.stat_fields(rec, idx).items():
+        if vt not in (0, 1) or (only is not None and f not in only):
+            continue
+        if B.split_role(f)[1] in B.SHAPE_ROLES or f == 'itemSkillLevel':
+            continue
+        m = B.AUGMENT.match(f)
+        if m and m.group(2) == 'Level' and not g(rec, 'augment%sName%s' % (m.group(1), m.group(3))):
+            continue
+        out[re.sub(r'\d$', '', f) if B.AUGMENT.match(f) else f.lower()] += float(val)
+    return out
+
+
+def skill_speed(R, skill, depth=0):
+    """{kind: highest % over the levels} a BUFF granted by an item (and the buffs it casts) adds to Attack/SpellCast/Run
+    speed; attacks (charges move fast only while striking) do not count"""
+    out = collections.Counter()
+    r = R.get(key(skill)) if skill else None
+    if r is None or depth > 3 or depth == 0 and not re.search(r'Buff|PassiveOn', g(r, 'Class')) or B.enemy_debuff(r):
+        return out
+    arr = {vn: vals for vn, vt, vals in r['vars']}
+    total = arr.get('characterTotalSpeedModifier') or [0]
+    for kind in B.SPEED_KINDS:
+        own_ = arr.get('character%sSpeedModifier' % kind) or [0]
+        out[kind] += max(float(own_[min(i, len(own_) - 1)]) + float(total[min(i, len(total) - 1)])
+                         for i in range(max(len(own_), len(total))))
+    for kind, (f, c) in B.DODGE_KINDS.items():
+        out[kind] += max([float(x) for x in (arr.get(f) or [0])])
+    for vn in ('buffSkillName', 'skillCastName'):
+        if arr.get(vn) and arr[vn][0]:
+            out.update(skill_speed(R, arr[vn][0], depth + 1))
+    return out
+
+
+def check_gear(R, gear, log):
+    """7i. baked gear (1.0.3): for every pet, each attribute summed over the records it wears = the hero's worn records
+    + every affix / relic (at its shard count) / bonus / amulet / artifact baked in - what the report lists as not
+    transferred. Summed straight from the source records, independent of how the builder placed them. And a baked
+    copy differs from the worn item only in attributes: look, class, requirements stay the item's own."""
+    bad = []
+    for pk, led in sorted(gear.items()):
+        pet = R.get(pk)
+        leaf = pk.split(BS)[-1]
+        if pet is None:
+            bad.append('%s: pet record missing' % leaf)
+            continue
+        want, got = collections.Counter(), collections.Counter()
+        for s, name in led['slots'].items():
+            worn = led['worn'][s]
+            if key((v(pet, 'loot%sItem1' % s)[0] or [''])[0]) != key(worn):
+                bad.append('%s: %s does not wear %s' % (leaf, s, worn.split(BS)[-1]))
+            orig, baked = R.get(key(name)), R.get(key(worn))
+            if orig is None or baked is None:
+                bad.append('%s: %s record missing (%s / %s)' % (leaf, s, name, worn))
+                continue
+            want.update(stat_values(orig))
+            got.update(stat_values(baked))
+            if baked is not orig:
+                a = {vn: vals for vn, vt, vals in orig['vars'] if not B.STAT_FIELD.match(vn) and vn != 'FileDescription'}
+                b = {vn: vals for vn, vt, vals in baked['vars'] if not B.STAT_FIELD.match(vn) and vn != 'FileDescription'}
+                if a != b:
+                    bad.append('%s: baked %s changed non-attribute fields %s' % (
+                        leaf, s, sorted(set(a) ^ set(b) | {k for k in set(a) & set(b) if a[k] != b[k]})[:6]))
+        for rn, idx in led['sources']:
+            want.update(stat_values(R[key(rn)], idx))
+        for rn, idx, fields in led['lost']:
+            if key(rn) in R:
+                want.subtract(stat_values(R[key(rn)], idx, set(fields)))
+        for f, d in led.get('adjust', {}).items():       # trimmed down to the hero's speed caps
+            want[f.lower()] += d
+        # 1.0.4: base speeds are the hero body's; gear speed bonuses never above the hero's caps
+        body = R.get(key(B.PC['female' if g(pet, 'characterGenderProfile') == 'Female' else 'male']))
+        ge = R.get(key(B.GAP_SRC))
+        par = led.get('attack')
+        for f in B.BASE_SPEEDS:
+            want_f = float(g(body, f, -1)) if body is not None else -1
+            if f == 'characterAttackSpeed' and par:
+                # 1.0.6: body scaled to the hero's cap, the difference on the weapon(s): body + weapon unchanged
+                want_f *= float(g(ge, 'playerAttackSpeedCapMax')) / float(g(ge, 'monsterAttackSpeedCapMax'))
+                for s in par['slots']:
+                    d = float(g(R[key(led['worn'][s])], 'characterBaseAttackSpeed', 0) or 0) - \
+                        float(g(R[key(led['slots'][s])], 'characterBaseAttackSpeed', 0) or 0)
+                    if abs(d - (float(g(body, f)) - want_f)) > 1e-4:
+                        bad.append('%s: %s weapon base speed +%.4f, body moved %.4f' % (leaf, s, d, float(g(body, f)) - want_f))
+            if body is None or abs(float(g(pet, f, 0) or 0) - want_f) > 1e-4:
+                bad.append('%s: %s %s, want %s (hero body %s)' % (leaf, f, g(pet, f), want_f, g(body, f) if body else None))
+        # 1.2.0: no attribute of the doppelganger record left: every one is the hero body's, except the base values we
+        # set from the save (attributes, life, mana) and the speeds checked above
+        ours = {'characterStrength', 'characterDexterity', 'characterIntelligence', 'characterLife', 'characterMana'} | \
+            set(B.BASE_SPEEDS)
+        pv = {vn: vals for vn, vt, vals in pet['vars'] if vt in (0, 1)}
+        bv = {vn: vals for vn, vt, vals in (body['vars'] if body else []) if vt in (0, 1)}
+        for f in sorted(set(pv) | set(bv)):
+            if (re.match(r'^(character|defensive|offensive|retaliation)', f) and f not in ours
+                    or f in ('numAttackSlots', 'numDefenseSlots')) and pv.get(f) != bv.get(f):
+                if any(x not in (0, 0.0) for x in (pv.get(f) or []) + (bv.get(f) or [])):
+                    bad.append('%s: %s = %s, the hero body has %s' % (leaf, f, pv.get(f), bv.get(f)))
+        if g(pet, 'characterRacialProfile'):
+            bad.append('%s: race %s left from the doppelganger' % (leaf, g(pet, 'characterRacialProfile')))
+        # 1.0.6: the companion's own passive cancels the pet difficulty bonus exactly, one level per difficulty
+        own = [(i, g(pet, 'skillName%d' % i)) for i in range(1, 34) if key(g(pet, 'skillName%d' % i)).endswith(
+            leaf[:-len('_pet.dbr')] + '_passive.dbr')]
+        if len(own) != 1 or v(pet, 'skillLevel%d' % own[0][0])[0] != [1, 2, 3]:
+            bad.append('%s: own passive missing or not on levels [1,2,3] (%s)' % (leaf, own))
+        else:
+            pas = R.get(key(own[0][1]))
+            pak = R.get(key(g(ge, 'petAttributePak')))
+            parts = led.get('passive') or {}
+            # 1.2.0: the passive = quest rewards + pak cancel + owner pet-bonus cancel + resist penalty/trim; the pak
+            # part must cancel the WHOLE pet pak (read here from the database), per difficulty
+            for vn, vt, vals in (pak['vars'] if pak else []):
+                if vt in (0, 1) and B.STAT_FIELD.match(vn) and vals and any(vals):
+                    part = (parts.get('pak') or {}).get(vn, [0, 0, 0])
+                    if any(abs(part[d] + float(vals[min(6 * d, len(vals) - 1)])) > 1e-4 for d in range(3)):
+                        bad.append('%s: own passive does not cancel the pet pak %s (%s vs %s)' % (leaf, vn, part, vals))
+            fields = set()
+            for p in parts.values():
+                fields |= set(p)
+            for f in fields:
+                want_p = [sum((parts[c].get(f) or [0, 0, 0])[d] for c in parts) for d in range(3)]
+                have_p = [float(x) for x in (v(pas, f)[0] or [0, 0, 0])]
+                if any(abs(have_p[min(d, len(have_p) - 1)] - want_p[d]) > 1.0 + 1e-6 for d in range(3)):
+                    bad.append('%s: own passive %s %s, its parts add up to %s' % (leaf, f, have_p, want_p))
+        # 1.0.6: auto-cast attacks on the gear: vanilla-proven class, 'on attack', and not ALSO in the skill list
+        listed = {key(g(pet, 'skillName%d' % i)) for i in range(1, 34) if g(pet, 'skillName%d' % i)}
+        # 1.0.7: no taunt anywhere (owner: enemies must not be pulled off the hero); the chain is a single link from a
+        # wired special, whose delay covers the chained skill's cooldown
+        for s_ in listed | {key(g(R.get(key(w)) or {'vars': []}, 'itemSkillName')) for w in led['worn'].values()}:
+            r_ = R.get(s_)
+            if r_ is not None and (float(g(r_, 'offensiveTauntMin', 0) or 0) or float(g(r_, 'offensiveTauntMax', 0) or 0)):
+                bad.append('%s: taunt skill %s' % (leaf, s_.split(BS)[-1]))
+        # 1.0.9: party burden (TQTogether.ini PartyBurden): the initial skill, an ally aura of -pct % total damage
+        pct = B.party_burden()
+        cid_ = leaf[:-len('_pet.dbr')]
+        if pct:
+            aura = R.get(key(g(pet, 'initialSkillName')))
+            buff = R.get(key(g(aura, 'buffSkillName'))) if aura else None
+            if not (aura and key(aura['name']).endswith(cid_ + '_burden.dbr') and buff and
+                    float(g(buff, 'offensiveTotalDamageModifier', 0) or 0) == -pct and not g(buff, 'characterManaLimitReserve')
+                    and key(aura['name']) in listed):
+                bad.append('%s: party burden %d%% is not the initial skill / wrong values' % (leaf, pct))
+        elif any(key(x).endswith('_burden.dbr') for x in listed):
+            bad.append('%s: party burden in the skill list though PartyBurden is 0' % leaf)
+        ci, cn = g(pet, 'chainInitialSkill'), g(pet, 'chainNextSkill')
+        if ci or cn:
+            slots = [p for p in ('specialAttack', 'specialAttack2', 'specialAttack3', 'specialAttack4', 'specialAttack5')
+                     if key(g(pet, p + 'SkillName')) == key(ci)]
+            nr = R.get(key(cn))
+            cd = float((v(nr, 'skillCooldownTime')[0] or [0])[-1]) if nr else 0
+            if not (slots and key(cn) in listed and key(cn) != key(ci) and
+                    float(g(pet, slots[0] + 'Delay', 0) or 0) >= cd - 1e-6):
+                bad.append('%s: chain %s -> %s is not a single link from a special covering the cooldown %.0f s' % (
+                    leaf, ci, cn, cd))
+        # 1.1.7: a creature never registers item auto-casts (Game.dll init order) - no worn record may carry one; every
+        # item skill converted from one is in the skill list, and an area proc (a toggle) sits in a buff-self slot
+        for s, worn in led['worn'].items():
+            wr = R.get(key(worn))
+            if wr is not None and g(wr, 'itemSkillAutoController'):
+                bad.append('%s: %s still carries the dead item auto-cast %s' % (leaf, s, g(wr, 'itemSkillName')))
+        toggles = {key(g(pet, f)) for f in ('initialSkillName', 'buffSelfSkillName', 'buffSelf2SkillName',
+                                            'buffSelf3SkillName') if g(pet, f)}
+        for nm, lv, toggle, what in led.get('procs', []):
+            pr = R.get(key(nm))
+            if pr is None or key(nm) not in listed or (toggle and key(nm) not in toggles):
+                bad.append('%s: item proc %s (%s) missing from the skill list / toggle slot' % (leaf, nm.split(BS)[-1], what))
+            elif 'PassiveOn' in g(pr, 'Class') or g(pr, 'Class') == 'Skill_OnHitAttackRadius':
+                if g(pr, 'Class') != 'Skill_PassiveOnLifeBuffSelf' and not float(g(pr, 'onHitActivationChance', 0) or 0):
+                    bad.append('%s: item proc %s has no activation chance' % (leaf, nm.split(BS)[-1]))
+                if g(pr, 'characterManaLimitReserve'):
+                    bad.append('%s: item proc %s reserves mana' % (leaf, nm.split(BS)[-1]))
+        buffs = collections.Counter()          # 1.0.5: speed of buffs granted by the worn items, at most the room left
+        for worn in led['worn'].values():
+            buffs.update(skill_speed(R, g(R.get(key(worn)) or {'vars': []}, 'itemSkillName')))
+        for kind, cap in B.SPEED_KINDS.items():
+            s = got['character%sspeedmodifier' % kind.lower()] + got['charactertotalspeedmodifier']
+            if s + buffs[kind] > float(g(ge, cap)) - 100 + 1e-3:
+                bad.append('%s: gear %s speed %+.0f%% + item buffs %+.0f%% above the hero cap %s' % (
+                    leaf, kind, s, buffs[kind], g(ge, cap)))
+        for kind, (f, cap) in B.DODGE_KINDS.items():             # 1.1.3
+            s = got[f.lower()]
+            if s + buffs[kind] > float(g(ge, cap)) + 1e-3:
+                bad.append('%s: gear %s %.0f%% + item buffs %.0f%% above the hero cap %s' % (leaf, f, s, buffs[kind], g(ge, cap)))
+        # 1.1.3: always-on resistances on every difficulty (difficulty penalty in the own passive) <= the hero's cap
+        rcap = float(g(ge, 'playerDefenseCap'))
+        for d in range(3):
+            res = collections.Counter()
+
+            def add(r_, lv, depth=0):
+                if r_ is None or depth > 3:
+                    return
+                dd = {vn: vals for vn, vt, vals in r_['vars']}
+                for f in B.RESISTS + ('defensiveElementalResistance',):
+                    if dd.get(f) and not float((dd.get(f + 'Chance') or [0])[0] or 0):
+                        val = float(dd[f][min(max(lv, 1), len(dd[f])) - 1])
+                        for t in (B.ELEMENTAL if f == 'defensiveElementalResistance' else (f,)):
+                            res[t] += val
+                if dd.get('buffSkillName') and dd['buffSkillName'][0]:
+                    add(R.get(key(dd['buffSkillName'][0])), lv, depth + 1)
+            for w in led['worn'].values():
+                add(R.get(key(w)), 1)
+            for i in range(1, 34):
+                sk = g(pet, 'skillName%d' % i)
+                r_ = R.get(key(sk)) if sk else None
+                if r_ is not None and re.search(r'Passive|Toggled|Modifier', g(r_, 'Class')) and 'PassiveOn' not in g(r_, 'Class'):
+                    lv = v(pet, 'skillLevel%d' % i)[0] or [1]
+                    add(r_, int(lv[min(d, len(lv) - 1)]))
+            over = {t: x for t, x in res.items() if x > rcap + 1e-3}
+            if over:
+                bad.append('%s: difficulty %d resistances above the hero cap %g: %s' % (leaf, d, rcap, over))
+        for f in sorted(set(want) | set(got)):
+            if abs(want[f] - got[f]) > 1e-3 * max(1.0, abs(want[f])):
+                bad.append('%s: gear %s = %g, sources give %g' % (leaf, f, got[f], want[f]))
+        log('%s: gear %d slots, %d sources baked in, %d not transferred' % (
+            leaf, len(led['slots']), len(led['sources']), len(led['lost'])))
+    return bad
+
+
+def check(build, base_arz, log=print, touched=(), gear=None):
     """-> list of problems (empty = ALL CHECKS PASSED). build = built database path or its records dict,
-    base_arz = the untouched game database."""
+    base_arz = the untouched game database, gear = Builder.gear_ledger (the 7i check runs only when given)."""
     import collections
     R = LazyArz.load(build).records if isinstance(build, str) else build
     NS = B.NS
@@ -74,14 +331,40 @@ def check(build, base_arz, log=print):
     mine = {k: R[k] for k in keys if k.startswith(NS)}
     if B.MARKER not in R:
         bad.append('marker record %s missing: the installer would not recognise the installed database' % B.MARKER)
-    # 1. names lowercase, every .dbr reference resolves (the game looks up lowercased paths)
+    # 1. names lowercase, every .dbr reference resolves (the game looks up lowercased paths) - except a reference that
+    #    is broken in the game's own database too (copied from a vanilla record, the game already lives with it)
+    broken = summary['broken_in_game']
+    inherited = set()
     for k, r in mine.items():
         if r['name'] != r['name'].lower():
             bad.append('uppercase record name ' + r['name'])
         for vn, vt, vals in r['vars']:
             for x in vals:
                 if isinstance(x, str) and x.lower().endswith('.dbr') and key(x) not in R:
-                    bad.append('%s: %s -> missing %s' % (k.split(BS)[-1], vn, x))
+                    if key(x) in broken:
+                        inherited.add(key(x))
+                    else:
+                        bad.append('%s: %s -> missing %s' % (k.split(BS)[-1], vn, x))
+    if inherited:
+        log('  %d reference(s) broken in the game itself, kept as they are: %s' % (
+            len(inherited), ', '.join(sorted(x.split(BS)[-1] for x in inherited))))
+    # 1b. records created or changed by tweaks (tweaks.py): names lowercase, references resolve, vanilla field types
+    vt_base = {k: collections.Counter(c) for k, c in summary['vt_of'].items()}
+    for k in sorted(touched):
+        r = R.get(k)
+        if r is None:
+            bad.append('tweak: record %s is missing after the build' % k)
+            continue
+        if r['name'] != r['name'].lower():
+            bad.append('tweak: uppercase record name ' + r['name'])
+        for vn, vt, vals in r['vars']:
+            for x in vals:
+                if isinstance(x, str) and x.lower().endswith('.dbr') and key(x) not in R and key(x) not in broken:
+                    bad.append('tweak: %s: %s -> missing %s' % (k, vn, x))
+            if vn in vt_base:
+                want = vt_base[vn].most_common(1)[0][0]
+                if not (vt == want or {vt, want} <= {0, 1} and vt_base[vn][vt] > 0):
+                    bad.append('tweak: %s: field %s stored as type %d, vanilla uses %d' % (k, vn, vt, want))
     pets = {k: r for k, r in mine.items() if k.endswith('_pet.dbr')}
     if not pets:
         log('  no companions yet (a hero needs level 20 and a mastery) - installing the base only')
@@ -98,6 +381,12 @@ def check(build, base_arz, log=print):
             bad.append('%s: AI range classes / actorRadius missing' % leaf)
         if g(r, 'distressCallGroup'):
             bad.append('%s: distressCallGroup %s left from the doppel' % (leaf, g(r, 'distressCallGroup')))
+        # 1.3.5: a healer companion heals the others only on their calls for help - they must never run out
+        if not (g(r, 'distressCall', 0) and float(g(r, 'distressCallRange', 0) or 0) >= 15 and
+                int(g(r, 'maxDistressCalls', 0) or 0) >= 1000 and int(g(r, 'distressCallTime', 99999) or 0) <= 5000):
+            bad.append('%s: calls for help limited (distressCall %s range %s every %s ms, %s calls) - a healer companion '
+                       'would not heal it' % (leaf, g(r, 'distressCall', 0), g(r, 'distressCallRange', 0),
+                                             g(r, 'distressCallTime', 0), g(r, 'maxDistressCalls', 0)))
         vals, vt = v(r, 'dropItems')
         if vals != [0] or vt != 3:
             bad.append('%s: dropItems=%s type %s (want 0 as bool)' % (leaf, vals, vt))
@@ -124,10 +413,12 @@ def check(build, base_arz, log=print):
         n = len(own)
         if not any(g(r, f) for f in ('attackSkillName', 'specialAttackSkillName', 'initialSkillName')):
             log('  note: %s has no active skill the AI can use - it fights with weapon attacks only' % leaf)
-        # 5. old doppel wiring gone
-        for f in ('specialAttackSkillName', 'specialAttack2SkillName'):
-            if 'distortreality' in g(r, f).lower():
-                bad.append('%s: vanilla doppel wiring left in %s' % (leaf, f))
+        # 5. old doppel wiring gone. 1.3.2: not by name - the doppel's special attacks are the Dream skills Psionic Touch
+        #    and Distort Reality, which a Dream hero legitimately has (a mace moves his Distort Reality to special 2);
+        #    what only the doppel has are its monster passives (4. already rejects AI fields naming unlisted skills)
+        left = sorted(s.split(BS)[-1] for s in own if s in DOPPEL_ONLY)
+        if left:
+            bad.append('%s: vanilla doppel skills left in the skill list: %s' % (leaf, ', '.join(left)))
         # 6. gear: every slot resolves to an item or a table that has a real bellSlope
         for slot in ('Head', 'Torso', 'LowerBody', 'Forearm', 'Finger1', 'Finger2', 'RightHand', 'LeftHand'):
             tabs, _ = v(r, 'loot%sItem1' % slot)
@@ -268,6 +559,8 @@ def check(build, base_arz, log=print):
         if any(o.startswith(NS + cid + '_') for o in offered):
             bad.append('tombstone %s: still sold or dropped' % name)
     log('registry: %d companions, %d live, %d tombstones' % (len(reg), len(live), len([c for c in reg if c not in live])))
+    if gear is not None:
+        bad += check_gear(R, gear, log)
     # 7. summon skills
     for k, r in mine.items():
         if k.endswith('_summon.dbr') and k.split(BS)[-1][:-len('_summon.dbr')] in live_cids:

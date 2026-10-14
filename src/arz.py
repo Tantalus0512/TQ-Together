@@ -66,12 +66,14 @@ class Arz(object):
     def save(self, path, level=9):
         pool = {}
         order = []
+        enc = lambda s: s.encode('cp1252', 'replace')
 
         def sid(s):
-            i = pool.get(s)
+            b = enc(s)          # keyed by the bytes written: a repeated entry hides every later record (arz_lazy.save)
+            i = pool.get(b)
             if i is None:
                 i = len(order)
-                pool[s] = i
+                pool[b] = i
                 order.append(s)
             return i
 
@@ -108,7 +110,7 @@ class Arz(object):
 
         st = bytearray(struct.pack('<i', len(order)))
         for s in order:
-            sb = s.encode('cp1252', 'replace')
+            sb = enc(s)
             st += struct.pack('<i', len(sb)) + sb
         st = bytes(st)
 

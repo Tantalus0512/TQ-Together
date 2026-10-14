@@ -7,7 +7,7 @@ changed), installs them into the game and starts Titan Quest.
   TQTogether.exe --rebuild     rebuild even if nothing changed
   TQTogether.exe --no-launch   do not start the game afterwards
 """
-import os, sys, json, glob, time, hashlib, traceback, subprocess
+import os, sys, re, json, glob, time, hashlib, traceback, subprocess
 
 import paths
 
@@ -73,6 +73,120 @@ def fingerprint(base_arz):
     if os.path.exists(reg):
         h.update(open(reg, 'rb').read())
     return h.hexdigest()
+
+
+def choose_hero(args, base_arz=None):
+    """Which hero is about to be played (Enter = the one saved last) and how strong the monsters get. TQTogether.ini:
+    Difficulty=party (1.4.0, the default): every companion the hero can summon - a completed eidolon in one of his worn
+      rings - counts as CompanionPlayers (default 1) more players, and monsters, champions and bosses get the game's own
+      co-op scaling for that party size on every difficulty (Legendary: +50 % life per player, bosses +100 %).
+    Difficulty=power (AutoLife=1 in older ini files): Legendary monster life from the party's damage per second (the
+      character window's number, hero_power): x = (dps / AutoLifeBase) ^ AutoLifePower, between 1 and AutoLifeMax,
+      damage x^AutoDamagePower, bosses x AutoLifeBoss on top - for heroes geared far beyond the game's own curve.
+      Life.<hero>=<x> sets x by hand.
+    Difficulty=off: vanilla monsters. The question is asked whenever there is more than one hero (his pet bonuses are
+    cancelled on the companions, 1.2.0)."""
+    import build_companions as B
+    st = paths.settings()
+    lives = {k[len('life.'):]: v for k, v in st.items() if k.startswith('life.')}
+    num = lambda k, d: float((st.get(k) or str(d)).replace(',', '.'))
+    mode = (st.get('difficulty') or '').strip().lower()
+    if mode not in ('party', 'power', 'off'):
+        mode = 'power' if st.get('autolife', '0').strip() not in ('', '0') or lives else 'party'
+    heroes = []
+    saves = paths.saves_dir()
+    for d in os.listdir(saves) if os.path.isdir(saves) else []:
+        p = os.path.join(saves, d, 'Player.chr')
+        if d.startswith('_') and os.path.isfile(p):
+            heroes.append((os.path.getmtime(p), d[1:], p))
+    heroes.sort(reverse=True)
+    paths_of = {h: p for _, h, p in heroes}
+    heroes = [h for _, h, _ in heroes]
+    if not heroes:
+        return
+    _, folders = B.load_registry()
+    folder_of = {c: f for f, c in folders.items()}
+
+    def members(h):
+        """[(name, save path)] - the hero first, then every companion he can summon (1.1.2)"""
+        out = [(h, paths_of[h])]
+        try:
+            worn = B.parse_equipment(paths_of[h])
+        except OSError:
+            worn = []
+        for it in worn:
+            m = re.search(r'companions\\([a-z0-9_]+)_relic\.dbr$', (it.get('relic') or '').lower())
+            if not m or not it.get('relic_bonus'):          # only a completed eidolon summons
+                continue
+            f = folder_of.get(m.group(1))
+            p = os.path.join(saves, f, 'Player.chr') if f else ''
+            if p and os.path.isfile(p) and f[1:].lower() != h.lower():
+                out.append((next((x for x in heroes if x.lower() == f[1:].lower()), f[1:]), p))
+        return out
+
+    per = min(5.0, max(0.0, num('companionplayers', 1.0)))
+    extra = lambda h: min(5.0, (len(members(h)) - 1) * per)
+    if mode == 'power':
+        import hero_power as H
+        if base_arz:
+            H.use_db(base_arz)
+        measured = {}
+
+        def dps(p):
+            if p not in measured:
+                try:
+                    measured[p] = H.strength(p)
+                except Exception as e:                   # a build the calculator does not know: counts as nothing
+                    log('  (damage of %s not measured: %s / урон не посчитан)' % (os.path.basename(os.path.dirname(p)), e))
+                    measured[p] = 0
+            return measured[p]
+        base, power, cap = num('autolifebase', 960), num('autolifepower', 0.65), num('autolifemax', 50)
+
+        def life(h):
+            try:
+                if h.lower() in lives:
+                    return max(0.1, float(lives[h.lower()].replace(',', '.')))
+                dmg = sum(dps(p) for _, p in members(h))
+                return round(min(cap, max(1.0, (dmg / base) ** power)), 1) if dmg > 0 else 1.0
+            except (ValueError, OSError):
+                pass
+            return 1.0
+        show = lambda h: '%s -> monster life on Legendary x%g / здоровье монстров на Легенде x%g%s' % (
+            ' + '.join('%s %.0f' % (n, dps(p)) for n, p in members(h)), life(h), life(h),
+            ', вручную' if h.lower() in lives else '')
+        note = '   (numbers = damage per second as in the character window / урон в секунду, как в окне персонажа)'
+    else:
+        show = lambda h: '%s -> %s' % (' + '.join(n for n, _ in members(h)),
+                                        'vanilla monsters / обычные монстры' if mode == 'off' or extra(h) <= 0 else
+                                        'monsters as for %g players / монстры как для %g игроков' % (1 + extra(h), 1 + extra(h)))
+        note = None
+    forced = next((a.split('=', 1)[1] for a in sys.argv[1:] if a.lower().startswith('--hero=')), None)
+    pick = next((h for h in heroes if forced and h.lower() == forced.lower()), None)
+    if pick is None and len(heroes) == 1:
+        pick = heroes[0]
+    if pick is None:
+        log('\nWho do you play? / Кем играешь? (Enter = %s)' % heroes[0])
+        if note:
+            log(note)
+        for i, h in enumerate(heroes, 1):
+            log('  %d  %s  (%s)' % (i, h, show(h)))
+        try:
+            ans = input('> ').strip()
+        except EOFError:
+            ans = ''
+        pick = heroes[int(ans) - 1] if ans.isdigit() and 1 <= int(ans) <= len(heroes) else heroes[0]
+    B.HERO_NAME = pick
+    if mode == 'power':
+        B.HERO_LIFE = life(pick)
+        B.HERO_BOSS = max(0.1, num('autolifeboss', 1))
+        B.HERO_DAMAGE = round(max(1.0, B.HERO_LIFE) ** max(0.0, num('autodamagepower', 0.3)), 2)
+        log('Hero / Герой: %s (DPS / урон в секунду: %s), monster life x%g, damage x%g' % (
+            pick, ' + '.join('%s %.0f' % (n, dps(p)) for n, p in members(pick)), B.HERO_LIFE, B.HERO_DAMAGE))
+        B.PARTY_EXTRA = 0.0
+    else:
+        B.PARTY_EXTRA = round(extra(pick), 3) if mode == 'party' else 0.0
+        B.HERO_LIFE, B.HERO_BOSS, B.HERO_DAMAGE = 1.0, 1.0, 1.0
+        log('Hero / Герой: %s' % show(pick))
 
 
 def single_instance():
@@ -145,6 +259,7 @@ def main():
 
     cleanup_old_cache()
     base = inst.prepare()
+    choose_hero(args, base)
     fp = fingerprint(base)
     if '--rebuild' not in args and inst.state.get('fingerprint') == fp and inst.installed_intact():
         log('Nothing changed since the last start - companions are up to date. / Изменений нет, соратники актуальны.')
@@ -155,7 +270,8 @@ def main():
         B.LOG = LOG_LINES
         b = B.Builder(base)
         b.run()
-        problems = verify_companions.check(b.db.arz.records, base, log)
+        problems = verify_companions.check(b.db.arz.records, base, log, touched=b.tweak_touched, gear=b.gear_ledger)
+        problems += verify_companions.string_table(os.path.join(B.OUT, 'database.arz'))
         if problems:
             log('\n'.join(problems))
             raise SystemExit('Self-check failed - nothing was installed. / Самопроверка не прошла, ничего не установлено.')

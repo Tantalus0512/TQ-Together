@@ -1,4 +1,4 @@
-TQ Together 1.0.1
+TQ Together 1.0.2
 Your heroes as companions - Titan Quest Anniversary Edition
 ===========================================================
 
@@ -44,18 +44,30 @@ Where to get them
   Normal and Epic orbs, bosses and merchants do not give eidolons.
 
 The companion
-  - has your hero's body, colours, worn gear (items and their affixes), level, attributes and skills;
+  - has your hero's body, colours, worn gear, level, attributes and skills;
+  - gets everything the worn gear gives: items with their affixes (purple ones too), relics and charms set into
+    them with their completion bonuses, and the amulet and the artifact. Creatures have no amulet or artifact
+    slot, so those are sewn into the companion's other items; what went where is in build\companions.txt;
+  - skills that items cast by themselves (a buff when hit, an area effect when struck, a heal at low health)
+    become the companion's own skills: the game never runs such item skills on creatures. "On attack" item skills
+    and the like cannot be moved this way - the report lists them;
+  - strikes, casts and runs as fast as your hero: the hero's base speed, and attack, cast and run speed bonuses
+    held to the caps the game puts on a hero (350%, 300% and 166%). Buffs from items (such as Artemis' Battle
+    Dance) work, but their speed bonus also stops at the hero's cap;
   - uses its skills by itself: auras and buffs on you, attacks, weapon techniques;
   - has the usual pet panel (top left): health and energy, stance (normal / aggressive / defensive), dismiss;
   - follows you, reacts quickly and does not drop its gear.
 
 What is NOT transferred
-  - the amulet and the artifact (creatures have no slots for them);
-  - relics and charms set into the hero's gear (the items themselves and their affixes are transferred);
+  - eidolons in the hero's gear (a companion does not call other companions);
+  - the exact roll of an affix: prefixes and suffixes come at their nominal value, not the item's random spread;
   - the inactive weapon set;
   - skills that summon pets of their own; skills that need a weapon the hero is not holding;
-  - active skills beyond what the creature AI can use (up to 5 attacks, 4 toggled auras, 3 buffs on allies,
-    1 heal); of several exclusive trances only the highest-level one is kept.
+  - auras, buffs and heals beyond what the creature AI can use (4 toggled auras, 3 buffs on allies, 1 heal); of
+    several exclusive trances only the highest-level one is kept. Attacks beyond the five the AI casts itself are
+    not lost: the sixth follows the rarest of the five (a chain, with its animation), the rest are cast
+    automatically as the companion hits, with a chance set by the skill's cooldown (no wind-up animation);
+  - Taunt: enemies should fight you, not be pulled off onto the companion.
   What each companion got and why a skill was left out: build\companions.txt in the data folder.
 
 Deleted heroes
@@ -74,6 +86,17 @@ If you want them in purple rings, use a separate mod that lifts this restriction
 (for example "Enchanting for Epic and Legendary Items" on Nexus). It is not part of TQ Together and not required.
 
 
+DATABASE TWEAKS (for your own changes)
+--------------------------------------
+TQ Together rebuilds database.arz from a clean copy on every start, so changes made on top of it
+would be lost. Put your own changes as *.json files into
+  Documents\My Games\Titan Quest - Immortal Throne\TQ Together\tweaks
+They are applied to the clean database before the companions. The format is data only: "clone" (a new
+record copied from an existing one), "set" (a field with type int/real/string/bool), "del" (remove a
+field). The self-check compares field types with the original game and checks every record reference;
+if anything is wrong, nothing is installed. A changed file triggers a rebuild on the next start.
+
+
 UNINSTALL
 ---------
 Run "Uninstall TQ Together.bat" (or TQTogether.exe --uninstall) and type YES. The original game files are restored
@@ -90,6 +113,26 @@ FILES
   (build\companions.txt = what each companion got; tq_together.log = log of the last start; registry.json = the
   heroes TQ Together knows, so eidolons of deleted heroes can fade instead of breaking).
 - TQTogether.ini (optional, next to the exe): GamePath=D:\Games\Titan Quest Anniversary Edition
+- Difficulty (Difficulty= in TQTogether.ini) - three modes:
+  * Difficulty=party (default): every companion the hero can summon (a completed eidolon in one of his worn
+    rings) counts as one more player. Monsters, champions and bosses get the game's own co-op scaling for that
+    party size, on Normal, Epic and Legendary. On Legendary, for example, every companion gives monsters +50% life
+    (bosses +100%), and monster damage grows by 17% for the second player, a little more after that.
+    CompanionPlayers=1 - how many players one companion counts as: 1.5 or 2 = harder, 0.5 = easier
+    (6 players at most).
+  * Difficulty=power: for heroes geared far above the usual curve (items from editors and the like). Legendary
+    monster life follows the party's strength - the hero's "damage per second" as in the character window (average
+    attack damage x attack speed, read from the save at every start; spells are not included) plus that of the
+    companions in his rings: (sum / AutoLifeBase) ^ AutoLifePower, from x1 to AutoLifeMax (defaults 960, 0.65, 50).
+    10x the damage -> 4.5x the life, you still kill twice as fast. AutoLifeBoss=2 - bosses twice as tough again.
+    AutoDamagePower=0.3 - monster damage and accuracy follow the life factor, slower. Life.<hero name>=10 sets the
+    factor by hand. Older settings with AutoLife=1 keep working as before.
+  * Difficulty=off: vanilla monsters.
+  With more than one hero TQ Together asks at start who you are about to play (Enter = the hero saved last).
+  The game reads its database once at start, so after switching heroes or the eidolons in your rings start the
+  game through TQTogether.exe again.
+- PartyBurden=35 in TQTogether.ini: every summoned companion carries the aura "Burden of Nemesis" - the whole
+  party deals 35% less damage (two companions: 70%). Default 0 (off).
 - Item and skill names are in Russian for a Russian game and in English for every other language.
 
 

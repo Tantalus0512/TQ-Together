@@ -18,7 +18,7 @@ VER = paths.VERSION
 NAME = 'TQ Together %s' % VER
 DIST = os.path.join(HERE, 'dist')
 WORK = os.path.join(HERE, 'build')
-MODULES = ['paths', 'installer', 'build_companions', 'verify_companions', 'orb_odds', 'arz', 'arz_lazy', 'tqlib',
+MODULES = ['paths', 'installer', 'build_companions', 'verify_companions', 'tweaks', 'orb_odds', 'hero_power', 'arz', 'arz_lazy', 'tqlib',
            'chr_reader']
 EXCLUDE = ['ssl', '_ssl', 'socket', '_socket', 'select', 'selectors', 'urllib', 'http', 'email', 'xml', 'xmlrpc',
            'ftplib', 'smtplib', 'mailbox', 'bz2', '_bz2', 'lzma', '_lzma', '_zstd', 'compression', 'decimal',
@@ -64,14 +64,19 @@ def main():
     out = os.path.join(DIST, NAME)
     shutil.rmtree(out, ignore_errors=True)
     shutil.copytree(os.path.join(WORK, 'pyi_dist', 'TQTogether'), out)
-    for f in ('README_EN.txt', 'README_RU.txt'):
+    for f in ('README_EN.txt', 'README_RU.txt', 'CHANGELOG_EN.txt', 'CHANGELOG_RU.txt'):
         shutil.copy2(os.path.join(HERE, 'docs', f), os.path.join(out, f))
     with open(os.path.join(out, 'Uninstall TQ Together.bat'), 'w', newline='\r\n', encoding='ascii') as f:
         f.write('@echo off\n"%~dp0TQTogether.exe" --uninstall\n')
     with open(os.path.join(out, 'TQTogether.ini.example'), 'w', encoding='utf-8') as f:
-        f.write('; Rename to TQTogether.ini only if TQ Together cannot find the game by itself.\n'
-                '; Переименуйте в TQTogether.ini, только если TQ Together не находит игру сам.\n'
-                'GamePath=D:\\Games\\Titan Quest Anniversary Edition\n')
+        f.write('; Rename to TQTogether.ini to change a setting (README: Difficulty).\n'
+                '; Переименуйте в TQTogether.ini, чтобы поменять настройку (README: Сложность).\n'
+                '; Only if TQ Together cannot find the game by itself / только если игра не находится сама:\n'
+                '; GamePath=D:\\Games\\Titan Quest Anniversary Edition\n'
+                '; party (default) | power | off\n'
+                '; Difficulty=party\n'
+                '; one companion = this many players / один соратник = столько игроков\n'
+                '; CompanionPlayers=1\n')
     shutil.copytree(SRC, os.path.join(out, 'src'), ignore=shutil.ignore_patterns('__pycache__'))
     zp = os.path.join(DIST, 'TQ_Together_%s.zip' % VER)
     if os.path.exists(zp):

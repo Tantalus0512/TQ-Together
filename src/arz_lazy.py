@@ -121,16 +121,22 @@ class LazyArz(object):
         return rec
 
     def save(self, path, level=1):
+        # the pool is keyed by the BYTES written, not by the Python text: Engine.dll 0x102906d0 gives a string table
+        # entry an id only if its bytes are new, and looks records up by that id, so ONE repeated entry shifts every
+        # later record out of reach (25.09: 'TQMod companion relic: ?????' for both Темун and Эйлин -> all of Eylin's
+        # records unreachable, her eidolon vanished from a ring)
+        enc = lambda s: s.encode('cp1252', 'replace')
         pool = {}
         order = list(self.strings)                     # original ids stay valid for reused blobs
         for i, s in enumerate(order):
-            pool.setdefault(s, i)
+            pool.setdefault(enc(s), i)
 
         def sid(s):
-            i = pool.get(s)
+            b = enc(s)
+            i = pool.get(b)
             if i is None:
                 i = len(order)
-                pool[s] = i
+                pool[b] = i
                 order.append(s)
             return i
 
@@ -168,8 +174,13 @@ class LazyArz(object):
             rt += struct.pack('<Q', FILETIME)
         rt = bytes(rt)
         st = bytearray(struct.pack('<i', len(order)))
+        seen = set()
         for s in order:
-            sb = s.encode('cp1252', 'replace')
+            sb = enc(s)
+            if sb in seen:
+                raise ValueError('database string table would repeat %r - the game could not find the records after it'
+                                 % sb[:80])
+            seen.add(sb)
             st += struct.pack('<i', len(sb)) + sb
         st = bytes(st)
         rt_start = 24 + len(data)

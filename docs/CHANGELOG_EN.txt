@@ -1,0 +1,59 @@
+TQ Together - changelog
+=======================
+
+1.4.0
+- New default difficulty, "party": every companion your hero can summon (a completed eidolon in a worn ring)
+  counts as one more player, and monsters, champions and bosses get the game's own co-op scaling for that party
+  size - on Normal, Epic and Legendary (Legendary: +50% monster life per companion, bosses +100%).
+  CompanionPlayers=1.5 / 2 in TQTogether.ini makes it harder, 0.5 easier.
+- The previous damage-based scaling stays as Difficulty=power for heroes geared far beyond the usual curve;
+  older ini files with AutoLife=1 keep working unchanged. Difficulty=off = vanilla monsters.
+- TQTogether.ini.example: every line commented out (renaming it no longer sets a wrong game path).
+
+1.3.5
+- A healer companion now heals the other companions too: in Titan Quest an AI heals an ally only when that ally
+  calls for help while being hit, and companions inherited the doppelganger's limit of 4 calls per summon,
+  every 10 s, within 10 m. Now: unlimited, every 2 s, within 20 m; allies are healed below 80% life.
+  (The hero has always been healed below 85%.)
+
+1.3.4
+- Fixed: a companion's eidolon could vanish from a ring (still in the save, ignored by the game) when two of
+  your heroes had non-Latin names of the same length. The database no longer contains hero names; the build
+  refuses to install a database the game could misread. No save editing needed - the eidolon comes back.
+
+1.3.3
+- Damage per second for the difficulty now matches the character window exactly (attack animation length
+  is part of the attack speed shown there).
+
+1.3.2
+- Self-check fixes found by building companions for every mastery pair and every item in the game:
+  enemy-slowing auras (Deathchill, Plague's Fatigue) no longer count as the companion's own speed; an item proc
+  without a free slot is dropped instead of failing the build; taunt skills from items are not transferred;
+  harmless vanilla data errors no longer block the build.
+- More accurate damage per second: modifiers of passive and toggled skills are counted.
+
+1.3.1
+- Fixed: a hero wearing the Hou Yi bow (a vanilla record with a broken sound reference) stopped the build.
+
+1.3.0
+- Automatic difficulty (now Difficulty=power) measures damage per second from the save, as the character window
+  shows it, instead of the biggest hit ever.
+
+1.2.0
+- Companions take damage like the hero: the game's pet bonuses (defense, life, resistances on Legendary), the
+  hero's pet-boosting quest rewards and the doppelganger's leftovers are cancelled; racial profile removed.
+
+1.1.x
+- Companions use their skills like the hero: up to 5 attacks, toggles, buffs, one chained attack; no taunt;
+  pauses between spammable attacks; item auto-cast skills become the companion's own skills.
+- Healer companions heal the hero first.
+- Optional difficulty settings: Life.<hero>, AutoLife (damage based), AutoLifeBoss, AutoDamagePower, PartyBurden.
+
+1.0.x
+- Companions wear the hero's full gear with affixes, relics, amulet and artifact baked in.
+- Attack, cast and run speed and their caps are the hero's, not the doppelganger's.
+- Database tweaks (JSON files in the data folder) applied under the companions.
+- Deleted heroes leave "Faded Eidolons" so saves stay valid; reliable recognition of the installed database.
+
+1.0.0
+- First release.
