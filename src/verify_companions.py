@@ -494,37 +494,32 @@ def check(build, base_arz, log=print, touched=(), gear=None):
             bad.append('orb %s: eidolon shard per orb %.4f, want %.4f' % (name, e, want))
         kept('orb ' + name, orb_odds.fields(R[t]), orb_odds.fields(vanR[t]))
     log('orbs: %g%% eidolon shard per orb on every difficulty, vanilla entries unchanged' % orb_pct)
-    # 7i. boss chests (1.5.0): every table a boss guards is our copy giving EidolonBossChance % per opening, the copy
-    #     keeps the original's odds, and no other container uses the copies (ordinary chests stay vanilla)
+    # 7i. bosses (1.5.1): every Boss monster that drops loot itself carries the shard table in ONE Misc slot with
+    #     EidolonBossChance %, and every other Misc field is exactly the original's (its own loot unchanged)
     baseR = _LA.load(base_arz).records
-    n_chests, guarded = 0, set()
-    bosses = B.boss_chests(R)
-    for k, r in bosses:
-        orig = baseR.get(k)
-        for i, t in enumerate(getattr_tables(r)):
-            tk = key(t)
-            if not tk.startswith(NS + 'bossloot_'):
-                if live_rel and boss_pct > 0 and (g(R.get(tk) or {'vars': []}, 'templateName') or '').lower().endswith('fixeditemloot.tpl'):
-                    bad.append('boss chest %s: table %s has no eidolon shard' % (k.split(BS)[-1], tk.split(BS)[-1]))
-                continue
-            guarded.add(tk)
-            e = orb_odds.per_container(R, tk, live_rel, po)
-            if abs(e - boss_pct / 100.0) > 5e-3:
-                bad.append('boss chest %s: eidolon shard per opening %.4f, want %.4f' % (k.split(BS)[-1], e, boss_pct / 100.0))
-            ot = getattr_tables(orig)[i] if orig is not None and i < len(getattr_tables(orig)) else ''
-            if not ot or key(ot) not in baseR:
-                bad.append('boss chest %s: copy %s without its original' % (k.split(BS)[-1], tk.split(BS)[-1]))
-            else:
-                kept('boss chest ' + k.split(BS)[-1], orb_odds.fields(R[tk]), orb_odds.fields(baseR[key(ot)]))
-        n_chests += 1
-    users = [k for k in R if not k.startswith(NS) and ('container' in k or 'chest' in k or 'orb' in k)
-             and g(R[k], 'Class') == 'FixedItemContainer' and any(key(t).startswith(NS + 'bossloot_') for t in getattr_tables(R[k]))]
-    boss_keys = {k for k, _ in bosses}
-    for k in users:
-        if k not in boss_keys:
-            bad.append('container %s (not a boss chest) uses an eidolon boss table' % k.split(BS)[-1])
-    log('boss chests: %d, %d loot tables with %g%% eidolon shard per opening, ordinary chests untouched' % (
-        n_chests, len(guarded), boss_pct))
+    shards_key = NS + 'eidolon_shards.dbr'
+    misc = lambda r_: {vn: vals for vn, vt, vals in r_['vars'] if 'Misc' in vn and vals and any(x not in (0, 0.0, '') for x in vals)}
+    n_boss = n_drop = 0
+    for k, r in B.boss_monsters(R):
+        n_boss += 1
+        mine_slots = [vn for vn, vals in misc(r).items() if vn.startswith('lootMisc') and key(vals[0]) == shards_key]
+        orig = misc(baseR[k]) if k in baseR else {}
+        if mine_slots:
+            n_drop += 1
+            n = mine_slots[0][len('lootMisc')]
+            if len(mine_slots) != 1 or abs(float(g(r, 'chanceToEquipMisc%s' % n, 0) or 0) - boss_pct) > 1e-3:
+                bad.append('boss %s: eidolon slot %s, chance %s, want one slot with %g' % (
+                    k.split(BS)[-1], mine_slots, g(r, 'chanceToEquipMisc%s' % n), boss_pct))
+            ours = {'lootMisc%sItem1' % n, 'chanceToEquipMisc%s' % n, 'chanceToEquipMisc%sItem1' % n}
+            # our three fields are left out on both sides: an empty slot may hold a stray vanilla weight (Typhon's
+            # chanceToEquipMisc1Item1 80 with no item and no chance) that the shard's weight replaces
+            if k not in touched and {f: x for f, x in misc(r).items() if f not in ours} != \
+                    {f: x for f, x in orig.items() if f not in ours}:
+                bad.append('boss %s: its own Misc loot changed' % k.split(BS)[-1])
+        elif live_rel and boss_pct > 0 and B.free_misc_slot(r) is not None:
+            bad.append('boss %s: has a free loot slot but no eidolon shard' % k.split(BS)[-1])
+    log('bosses: %d drop loot themselves, %d with %g%% eidolon shard per kill, their own loot unchanged' % (
+        n_boss, n_drop, boss_pct))
     # 7c. relic chain: relic -> bonus table -> affix -> itemSkillName -> summon skill -> spawnObjects -> pet
     live_cids = {k.split(BS)[-1][:-len('_pet.dbr')] for k in pets}
     relics = [k for k in mine if k.endswith('_relic.dbr') and k.split(BS)[-1][:-len('_relic.dbr')] in live_cids]

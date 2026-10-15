@@ -39,8 +39,9 @@ Eidolon: [hero name]
 Where to get them
   - Electrum orbs from the electrum merchant (Eternal Embers), on Normal, Epic and Legendary: 40% per orb to get
     one shard (EidolonOrbChance= in TQTogether.ini).
-  - Boss chests: the chest a boss leaves (first kill and repeat kills - Nessus, the Telkines, Charon, Hades ...) and the
-    boss orbs of Eternal Embers: 10% per opening (EidolonBossChance=). Ordinary chests in the world give nothing.
+  - Bosses: the boss itself drops a shard when it dies, 20% per kill (EidolonBossChance=) - Nessus, Arachne, the
+    Telkines, the Hydra, Charon and about two hundred more, on every difficulty and on repeat kills. Ordinary chests
+    and monsters give nothing.
   The shard belongs to a random one of your level-20+ heroes (all equally likely, the one you play included). The
   more such heroes you have, the more it takes to collect two shards of one particular hero.
   Nothing else in the orbs and chests changes - every other item keeps its original chance. Merchants do not sell

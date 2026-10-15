@@ -1,6 +1,11 @@
 TQ Together - changelog
 =======================
 
+1.5.1
+- Bosses drop eidolon shards themselves when they die - 20% per kill (EidolonBossChance=), Nessus, Arachne, the
+  Telkines, the Hydra, Charon and about two hundred more - instead of 10% from their chests in 1.5.0. Boss chests
+  are vanilla again; the bosses' own loot is unchanged.
+
 1.5.0
 - Eidolon shards drop on every difficulty now: electrum orbs of Normal, Epic and Legendary (40% per orb) and boss
   chests - first and repeat kills of every act boss, plus the boss orbs of Eternal Embers (10% per opening).

@@ -14,8 +14,8 @@ on every launch, so levelling that character levels the companion too.
   - the companion is a Class Pet record (pet panel: health/mana, stance, dismiss) on the player's body
   - "Eidolon: <name>": a 2-shard relic that fits rings only (two rings = at most two companions); completing it
     rolls the completion bonus (an affix) that grants "Summon Companion: <name>" - like vanilla relic bonuses
-    that grant Wraith Lord etc. Drops from electrum orbs of every difficulty (ORB_CHANCE % per orb) and boss chests
-    (BOSS_CHANCE % per opening) since 1.5.0, vanilla odds kept
+    that grant Wraith Lord etc. Drops from electrum orbs of every difficulty (ORB_CHANCE % per orb, 1.5.0) and from
+    the bosses themselves (BOSS_CHANCE % per kill, 1.5.1), vanilla odds kept
   - deleted characters leave inert "faded" records (registry.json) so items holding their relic stay valid;
     once nothing anywhere refers to them (saves, stashes, TQVault, backups: scan_roots) they are dropped
 Checks: verify_companions.py (run by --install; ALL CHECKS PASSED or nothing is installed).
@@ -123,7 +123,8 @@ ORB_CHANCE = 40.0      # 1.5.0: % per electrum orb (one opening) to give one eid
                        # (2 shards = 1 eidolon); TQTogether.ini EidolonOrbChance. Up to 1.4.0 '10' was per ITEM of
                        # an orb, ~38 % per Legendary orb in fact - the default keeps that.
 ORB_TIERS = ('_1n_', '_2e_', '_3l_')   # 1.5.0: Normal, Epic and Legendary orbs (x4_ElectrumOrb_*_<tier>_Loot)
-BOSS_CHANCE = 10.0     # 1.5.0: % per boss chest opening (first and repeat kills); TQTogether.ini EidolonBossChance
+BOSS_CHANCE = 20.0     # 1.5.1: % per boss kill, dropped by the boss itself; TQTogether.ini EidolonBossChance
+                       # (1.5.0 put 10 % into the boss chests instead)
 AGGR_CONTROLLER = dict(FAST_CONTROLLER, MaxPursuitDistance=32.0, TeleportToLeaderDistance=30.0, WanderDistance=7.0)
 # 1.1.9: Eylin's companion spent Regrowth on herself and it was on cooldown when the hero needed it: heal the leader
 # (the hero) early, the others at 70 %, with the satyr shaman's 1 s heal delay (vanilla heal-casters, 148 monsters)
@@ -225,20 +226,28 @@ def drop_chances():
     return tuple(out)
 
 
-def boss_chests(R):
-    """[(key, record)] of every container a boss guards: FixedItemContainer locked until a Boss dies (first-kill and
-    repeat chests of every act) and the boss orbs of Eternal Embers (x4_..._boss_orb)"""
+def boss_monsters(R):
+    """[(key, record)] of every monster classified Boss that drops loot itself (dropItems not 0)"""
     out = []
     for k in sorted(R):
-        if 'container' not in k and 'chest' not in k and 'orb' not in k:
+        if 'creature' not in k:
             continue
         r = R[k]
-        if (get1(r, 'Class', '') or '') != 'FixedItemContainer':
+        if (get1(r, 'monsterClassification', '') or '') != 'Boss' or str(get1(r, 'dropItems', 1)) in ('0', 'False'):
             continue
-        leaf = k.split(BS)[-1]
-        if (get1(r, 'LockedClassification', '') or '') == 'Boss' or ('boss' in leaf and 'orb' in leaf):
-            out.append((k, r))
+        out.append((k, r))
     return out
+
+
+def free_misc_slot(r):
+    """the first Misc loot slot (1..3) a monster leaves empty: no item and no chance -> its number, else None"""
+    for n in (1, 2, 3):
+        if float(get1(r, 'chanceToEquipMisc%d' % n, 0) or 0):
+            continue
+        if any(x for j in range(1, 7) for x in (getv(r, 'lootMisc%dItem%d' % (n, j)) or [])):
+            continue
+        return n
+    return None
 # how many vanilla creatures start a chainInitialSkill from a special attack of this class (survey 24.09)
 CHAIN_PRECEDENT = {'Skill_AttackSpell': 33, 'Skill_SpawnPetMonster': 21, 'Skill_BuffSelfToggled': 18,
                    'Skill_BuffSelfDuration': 15, 'Skill_AttackSpellTeleportSelf': 13, 'Skill_AttackProjectileAreaEffect': 11,
@@ -1623,11 +1632,12 @@ class Builder(object):
         return True
 
     def eidolon_drops(self, relics):
-        """1.5.0: eidolon shards from electrum orbs of every difficulty (EidolonOrbChance % per orb) and from boss
-        chests (EidolonBossChance % per opening): every FixedItemContainer locked until a Boss dies - first and
-        repeat kills - and the Eternal Embers boss orbs. A boss chest gets copies of its loot tables (the
-        originals may also stock ordinary chests); the engine opens ONE of a container's tables per opening, so each
-        copy carries the full chance. Vanilla odds inside every slot are untouched."""
+        """1.5.0: eidolon shards from electrum orbs of every difficulty (EidolonOrbChance % per orb). 1.5.1: and from
+        the boss itself when it dies (EidolonBossChance % per kill), owner 15.10 - the chest felt like nothing ever
+        dropped: an empty Misc loot slot of every Boss monster (lootMiscN / chanceToEquipMiscN, as ordinary monsters
+        carry potions and relics) gets the shard table. Act bosses keep their Misc chances at 0 and give their loot
+        through the boss chest, so their own loot is unchanged; bosses that drop nothing themselves (dropItems 0:
+        the early stages of multi-stage bosses) are left out."""
         if not relics:
             return
         orb_pct, boss_pct = drop_chances()
@@ -1642,28 +1652,19 @@ class Builder(object):
         log('  eidolon shards in %d electrum orbs (all difficulties), %g%% per orb' % (n, orb_pct))
         if boss_pct <= 0:
             return
-        copies, chests, skipped = {}, 0, 0
-        for k, r in boss_chests(self.R):
-            new = []
-            for t in getv(r, 'tables') or []:
-                tk = key_of(t) if t else ''
-                src = self.R.get(tk)
-                if src is None or not (get1(src, 'templateName', '') or '').lower().endswith('fixeditemloot.tpl'):
-                    new.append(t)
-                    skipped += 1
-                    continue
-                if tk not in copies:
-                    leaf = tk.split(BS)[-1][:-4]
-                    c = self.clone(src['name'], NS + 'bossloot_%s_%s.dbr' % (leaf, hashlib.md5(tk.encode()).hexdigest()[:6]))
-                    setv(c, 'FileDescription', 'TQ Together: boss chest loot %s + eidolon shard %g%%' % (leaf, boss_pct))
-                    copies[tk] = c['name'] if self.add_shard(c, shards, boss_pct) else src['name']
-                new.append(copies[tk])
-            if new != list(getv(r, 'tables') or []):
-                setv(r, 'tables', new)
-                self.db.mark(r['name'])
-                chests += 1
-        log('  eidolon shards in %d boss chests (%d loot tables copied), %g%% per chest%s' % (
-            chests, len(copies), boss_pct, ', %d tables of another kind left alone' % skipped if skipped else ''))
+        done, full = 0, []
+        for k, r in boss_monsters(self.R):
+            n = free_misc_slot(r)
+            if n is None:
+                full.append(k.split(BS)[-1])
+                continue
+            setv(r, 'chanceToEquipMisc%d' % n, boss_pct, 1)
+            setv(r, 'lootMisc%dItem1' % n, shards['name'])
+            setv(r, 'chanceToEquipMisc%dItem1' % n, 1, 0)
+            self.db.mark(r['name'])
+            done += 1
+        log('  eidolon shards from %d boss monsters, %g%% per kill%s' % (
+            done, boss_pct, ', %d without a free loot slot left alone' % len(full) if full else ''))
 
     # ---------------------------------------------------------- merchant
     def sell(self, rings):

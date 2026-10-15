@@ -5,7 +5,7 @@ Your heroes as companions for each other in **Titan Quest Anniversary Edition** 
 Every hero in your saves can fight at the side of your other heroes. Each time you start the game through
 TQ Together, the companion is rebuilt from that hero's **current** save — level, attributes, masteries and skills,
 worn gear with its affixes. Companions are summoned with **Eidolons**, two-shard ring relics that drop from
-electrum orbs of every difficulty and from boss chests. Every summoned companion counts as one more player:
+electrum orbs of every difficulty and from bosses. Every summoned companion counts as one more player:
 monsters get the game's own co-op scaling.
 
 - Download and player instructions: [Nexus Mods page](https://www.nexusmods.com/titanquestanniversaryedition/mods/127)
