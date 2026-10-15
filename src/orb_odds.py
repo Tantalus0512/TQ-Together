@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Expected number of a given item per electrum orb, walking the orb's loot definition exactly:
-FixedItemLoot (independent slots: chance x weighted pick) -> LootMasterTable / FixedWeight tables (weighted pick).
+"""Odds of a given item from a container (electrum orb, boss chest), walking the loot definition as the engine does
+(1.5.0, Game.dll): FixedItemController::PickLootRecord 0x10181280 takes ONE record of the container's `tables` (by
+difficulty / level index); SelectLootNumber 0x10181da0 draws the number of items from numSpawnMin/MaxEquation
+(numberOfPlayers); SelectLoot 0x10181530 picks, for EACH item, one slot with probability lootNChance / (sum of the six
+chances) - a running total, not 100 - then a weighted pick inside the slot. Nested LootMasterTable / FixedWeight tables
+are weighted picks. (Before 1.5.0 this model counted one item per orb; an orb gives 7-8.)
   py -3 orb_odds.py [build|vanilla] [record substring]"""
 import sys, re, functools
 sys.path.insert(0, r'D:\TQMod\tools')
@@ -44,15 +48,15 @@ def odds(R, targets):
         f = fields(r)
         cls = (f.get('Class') or [''])[0]
         tpl = (f.get('templateName') or [''])[0].lower()
-        if tpl.endswith('fixeditemloot.tpl'):
-            tot = 0.0
-            for n in range(1, 40):
-                ch = (f.get('loot%dChance' % n) or [0])[0]
+        if tpl.endswith('fixeditemloot.tpl'):          # ONE item: slot by chance / running total, then by weight
+            tot, total = 0.0, sum(float((f.get('loot%dChance' % n) or [0])[0]) for n in range(1, 7))
+            for n in range(1, 7):
+                ch = float((f.get('loot%dChance' % n) or [0])[0])
                 pairs = [(key(f['loot%dName%d' % (n, j)][0]), float((f.get('loot%dWeight%d' % (n, j)) or [0])[0]))
                          for j in range(1, 40) if (f.get('loot%dName%d' % (n, j)) or [''])[0]]
                 W = sum(w for _, w in pairs)
-                if ch and W:
-                    tot += ch / 100.0 * sum(w / W * p(x) for x, w in pairs)
+                if ch and W and total:
+                    tot += ch / total * sum(w / W * p(x) for x, w in pairs)
             return tot
         if cls in ('LootMasterTable', 'LootItemTable_FixedWeight'):
             pairs = [(key(f['lootName%d' % j][0]), float((f.get('lootWeight%d' % j) or [0])[0]))
@@ -61,6 +65,30 @@ def odds(R, targets):
             return sum(w / W * p(x) for x, w in pairs) if W else 0.0
         return 0.0
     return p
+
+
+def spawn_counts(f):
+    """FixedItemController::SelectLootNumber: the item count lies between the two equations (one player)"""
+    def ev(name, d):
+        e = (f.get(name) or [''])[0]
+        if not e:
+            return d
+        try:
+            return float(eval(e.replace('^', '**'), {'__builtins__': {}}, {'numberOfPlayers': 1}))
+        except Exception:
+            return d
+    lo = ev('numSpawnMinEquation', 1.0)
+    hi = ev('numSpawnMaxEquation', lo)
+    lo, hi = int(min(lo, hi)), int(max(lo, hi))
+    return list(range(max(1, lo), max(1, hi) + 1))
+
+
+def per_container(R, table, targets, p=None):
+    """chance that ONE opening of a container rolling `table` gives at least one of `targets`"""
+    p = p or odds(R, targets)
+    q = min(1.0, p(table))
+    ns = spawn_counts(fields(R[table]))
+    return sum(1 - (1 - q) ** n for n in ns) / len(ns)
 
 
 def orbs(R):

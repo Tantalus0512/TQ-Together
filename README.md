@@ -5,7 +5,8 @@ Your heroes as companions for each other in **Titan Quest Anniversary Edition** 
 Every hero in your saves can fight at the side of your other heroes. Each time you start the game through
 TQ Together, the companion is rebuilt from that hero's **current** save — level, attributes, masteries and skills,
 worn gear with its affixes. Companions are summoned with **Eidolons**, two-shard ring relics that drop from
-Legendary electrum orbs.
+electrum orbs of every difficulty and from boss chests. Every summoned companion counts as one more player:
+monsters get the game's own co-op scaling.
 
 - Download and player instructions: [Nexus Mods page](https://www.nexusmods.com/titanquestanniversaryedition/mods/127)
 - Player readme: [docs/README_EN.txt](docs/README_EN.txt) · [docs/README_RU.txt](docs/README_RU.txt)
@@ -50,7 +51,8 @@ Run from source without building: `py -3 src/tq_together.py [--uninstall | --reb
 | `src/verify_companions.py` | self-check of every build; nothing is installed unless it passes |
 | `src/arz_lazy.py`, `src/arz.py` | reader/writer of the game's `.arz` database |
 | `src/chr_reader.py` | reader of `Player.chr` save files |
-| `src/orb_odds.py` | exact drop odds of the electrum orbs (used by the self-check) |
+| `src/orb_odds.py` | exact drop odds of electrum orbs and boss chests by the engine's loot rules (used by the self-check) |
+| `src/tweaks.py` | the player's own database tweaks (JSON files), applied under the companions |
 | `src/hero_power.py` | a hero's damage per second as the character window shows it (auto difficulty) |
 
 ## License

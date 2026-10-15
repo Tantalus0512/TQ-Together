@@ -1,4 +1,4 @@
-TQ Together 1.0.2
+TQ Together
 Your heroes as companions - Titan Quest Anniversary Edition
 ===========================================================
 
@@ -37,11 +37,14 @@ Eidolon: [hero name]
   Eidolons fit RINGS only, so you can have at most two companions at a time.
 
 Where to get them
-  Legendary electrum orbs from the electrum merchant (Eternal Embers): 10% per orb to get one shard. The shard
-  belongs to a random one of your level-20+ heroes (all equally likely, the one you play included). The more such
-  heroes you have, the more orbs it takes to collect two shards of one particular hero.
-  Nothing else in the orbs changes - every other item keeps exactly its original chance.
-  Normal and Epic orbs, bosses and merchants do not give eidolons.
+  - Electrum orbs from the electrum merchant (Eternal Embers), on Normal, Epic and Legendary: 40% per orb to get
+    one shard (EidolonOrbChance= in TQTogether.ini).
+  - Boss chests: the chest a boss leaves (first kill and repeat kills - Nessus, the Telkines, Charon, Hades ...) and the
+    boss orbs of Eternal Embers: 10% per opening (EidolonBossChance=). Ordinary chests in the world give nothing.
+  The shard belongs to a random one of your level-20+ heroes (all equally likely, the one you play included). The
+  more such heroes you have, the more it takes to collect two shards of one particular hero.
+  Nothing else in the orbs and chests changes - every other item keeps its original chance. Merchants do not sell
+  eidolons.
 
 The companion
   - has your hero's body, colours, worn gear, level, attributes and skills;

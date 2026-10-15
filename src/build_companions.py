@@ -14,7 +14,8 @@ on every launch, so levelling that character levels the companion too.
   - the companion is a Class Pet record (pet panel: health/mana, stance, dismiss) on the player's body
   - "Eidolon: <name>": a 2-shard relic that fits rings only (two rings = at most two companions); completing it
     rolls the completion bonus (an affix) that grants "Summon Companion: <name>" - like vanilla relic bonuses
-    that grant Wraith Lord etc. Drops only from LEGENDARY electrum orbs (ORB_CHANCE per orb), vanilla odds kept
+    that grant Wraith Lord etc. Drops from electrum orbs of every difficulty (ORB_CHANCE % per orb) and boss chests
+    (BOSS_CHANCE % per opening) since 1.5.0, vanilla odds kept
   - deleted characters leave inert "faded" records (registry.json) so items holding their relic stay valid;
     once nothing anywhere refers to them (saves, stashes, TQVault, backups: scan_roots) they are dropped
 Checks: verify_companions.py (run by --install; ALL CHECKS PASSED or nothing is installed).
@@ -26,6 +27,7 @@ from tqlib import DB, get1, getv, setv, delv, key_of, BS, write_text_file, load_
 from arz_lazy import LazyArz
 import paths
 from chr_reader import read_char
+import orb_odds
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(paths.data_dir(), 'build') if paths.frozen() else os.path.join(HERE, 'build')
@@ -117,8 +119,11 @@ FAST_CONTROLLER = {   # vanilla pet controllers: sight anger 1-6/s, tolerance 1-
     'InnerSightAngerRate': 40.0, 'AttackedAnger': 20.0, 'AllyAttackedAnger': 25.0, 'ProjectileAnger': 10.0,
     'ForgiveRate': 1.0, 'MaxPursuitDistance': 26.0, 'TeleportToLeaderDistance': 27.2, 'WanderDistance': 5.0,
 }
-ORB_CHANCE = 10.0      # % per LEGENDARY electrum orb: one eidolon shard of a random companion (2 shards = 1 eidolon)
-ORB_TIER = '_3l_'      # legendary orbs only (x4_ElectrumOrb_*_3l_Loot)
+ORB_CHANCE = 40.0      # 1.5.0: % per electrum orb (one opening) to give one eidolon shard of a random companion
+                       # (2 shards = 1 eidolon); TQTogether.ini EidolonOrbChance. Up to 1.4.0 '10' was per ITEM of
+                       # an orb, ~38 % per Legendary orb in fact - the default keeps that.
+ORB_TIERS = ('_1n_', '_2e_', '_3l_')   # 1.5.0: Normal, Epic and Legendary orbs (x4_ElectrumOrb_*_<tier>_Loot)
+BOSS_CHANCE = 10.0     # 1.5.0: % per boss chest opening (first and repeat kills); TQTogether.ini EidolonBossChance
 AGGR_CONTROLLER = dict(FAST_CONTROLLER, MaxPursuitDistance=32.0, TeleportToLeaderDistance=30.0, WanderDistance=7.0)
 # 1.1.9: Eylin's companion spent Regrowth on herself and it was on cooldown when the hero needed it: heal the leader
 # (the hero) early, the others at 70 %, with the satyr shaman's 1 s heal delay (vanilla heal-casters, 148 monsters)
@@ -206,6 +211,34 @@ def party_burden():
         return max(0, min(90, int(float(paths.settings().get('partyburden', '0') or 0))))
     except ValueError:
         return 0
+
+
+def drop_chances():
+    """1.5.0: (% per electrum orb, % per boss chest) - TQTogether.ini EidolonOrbChance / EidolonBossChance, 0 = none"""
+    st = paths.settings()
+    out = []
+    for k, d in (('eidolonorbchance', ORB_CHANCE), ('eidolonbosschance', BOSS_CHANCE)):
+        try:
+            out.append(min(95.0, max(0.0, float((st.get(k) or str(d)).replace(',', '.')))))
+        except ValueError:
+            out.append(d)
+    return tuple(out)
+
+
+def boss_chests(R):
+    """[(key, record)] of every container a boss guards: FixedItemContainer locked until a Boss dies (first-kill and
+    repeat chests of every act) and the boss orbs of Eternal Embers (x4_..._boss_orb)"""
+    out = []
+    for k in sorted(R):
+        if 'container' not in k and 'chest' not in k and 'orb' not in k:
+            continue
+        r = R[k]
+        if (get1(r, 'Class', '') or '') != 'FixedItemContainer':
+            continue
+        leaf = k.split(BS)[-1]
+        if (get1(r, 'LockedClassification', '') or '') == 'Boss' or ('boss' in leaf and 'orb' in leaf):
+            out.append((k, r))
+    return out
 # how many vanilla creatures start a chainInitialSkill from a special attack of this class (survey 24.09)
 CHAIN_PRECEDENT = {'Skill_AttackSpell': 33, 'Skill_SpawnPetMonster': 21, 'Skill_BuffSelfToggled': 18,
                    'Skill_BuffSelfDuration': 15, 'Skill_AttackSpellTeleportSelf': 13, 'Skill_AttackProjectileAreaEffect': 11,
@@ -1525,14 +1558,12 @@ class Builder(object):
             setv(c, 'FileDescription', 'TQMod companion: LicheKing %s + fast anger, heals the hero first' % kind)
         return name
 
-    def electrum(self, relics):
-        """one eidolon shard with ORB_CHANCE % per LEGENDARY electrum orb, vanilla odds untouched"""
-        if not relics:
-            return
+    def shard_table(self, relics):
+        """records/tqmod/companions/eidolon_shards.dbr: one eidolon shard, every live companion equally likely"""
         shards = self.clone(RELIC_TABLE_SRC, NS + 'eidolon_shards.dbr')   # any record; rebuilt as a FixedWeight table
         for vn, vt, vals in list(shards['vars']):
             delv(shards, vn)
-        setv(shards, 'templateName', 'database\\Templates\\LootItemTable_FixedWeight.tpl')
+        setv(shards, 'templateName', 'database' + BS + 'Templates' + BS + 'LootItemTable_FixedWeight.tpl')
         setv(shards, 'Class', 'LootItemTable_FixedWeight')
         chunks = [relics[i:i + 30] for i in range(0, len(relics), 30)]   # lootName1..30 per table
         if len(chunks) == 1:
@@ -1540,13 +1571,13 @@ class Builder(object):
                 setv(shards, 'lootName%d' % i, r)
                 setv(shards, 'lootWeight%d' % i, 100, 0)
         else:
-            setv(shards, 'templateName', 'database\\Templates\\LootMasterTable.tpl')
+            setv(shards, 'templateName', 'database' + BS + 'Templates' + BS + 'LootMasterTable.tpl')
             setv(shards, 'Class', 'LootMasterTable')
             for c, chunk in enumerate(chunks, 1):
                 t = self.clone(RELIC_TABLE_SRC, NS + 'eidolon_shards_%d.dbr' % c)
                 for vn, vt, vals in list(t['vars']):
                     delv(t, vn)
-                setv(t, 'templateName', 'database\\Templates\\LootItemTable_FixedWeight.tpl')
+                setv(t, 'templateName', 'database' + BS + 'Templates' + BS + 'LootItemTable_FixedWeight.tpl')
                 setv(t, 'Class', 'LootItemTable_FixedWeight')
                 for i, r in enumerate(chunk, 1):
                     setv(t, 'lootName%d' % i, r)
@@ -1554,30 +1585,85 @@ class Builder(object):
                 setv(shards, 'lootName%d' % c, t['name'])
                 setv(shards, 'lootWeight%d' % c, 100 * len(chunk), 0)
         setv(shards, 'FileDescription', 'TQMod companions: one eidolon shard, companions equally likely')
+        return shards
+
+    def add_shard(self, loot, shards, pct):
+        """put the shard table into a FixedItemLoot record so that ONE opening gives a shard with pct % (1.5.0):
+        each of its N items (numSpawn equations) picks a slot by chance / running total of the six chances, so a
+        per-item p with mean over N of 1-(1-p)^N = pct is solved, and the chance added to one slot is
+        delta = p * total / (1 - p). Inside that slot every vanilla entry keeps chance x weight / slot weight."""
+        total = sum(float(get1(loot, 'loot%dChance' % s_, 0) or 0) for s_ in range(1, 7))
+        slots = []
+        for s_ in range(1, 7):
+            ch = float(get1(loot, 'loot%dChance' % s_, 0) or 0)
+            names = [(j, get1(loot, 'loot%dName%d' % (s_, j), '')) for j in range(1, 40)]
+            names = [(j, x) for j, x in names if x]
+            W = sum(float(get1(loot, 'loot%dWeight%d' % (s_, j), 0) or 0) for j, _ in names)
+            if ch and W and len(names) < 39:
+                slots.append((0 if any('relic' in x.lower() for _, x in names) else 1, ch, s_, W))
+        if not slots or total <= 0:
+            return False
+        ns = orb_odds.spawn_counts({vn: vals for vn, vt, vals in loot['vars']})
+        lo, hi = 0.0, 1.0
+        for _ in range(60):                          # mean over N of 1 - (1 - p)^N is monotone in p
+            mid = (lo + hi) / 2
+            if sum(1 - (1 - mid) ** n for n in ns) / len(ns) < pct / 100.0:
+                lo = mid
+            else:
+                hi = mid
+        p = (lo + hi) / 2
+        delta = p * total / (1 - p)
+        _, ch, s_, W = min(slots)
+        w = max(1, int(round(delta * W / ch)))       # weights are ints; the slot chance absorbs the rounding
+        j = next(j for j in range(1, 40) if not get1(loot, 'loot%dName%d' % (s_, j), ''))
+        setv(loot, 'loot%dName%d' % (s_, j), shards['name'])
+        setv(loot, 'loot%dWeight%d' % (s_, j), w, 0)
+        setv(loot, 'loot%dChance' % s_, ch * (W + w) / W, 1)     # every vanilla entry keeps ch*w_i/W exactly
+        self.db.mark(loot['name'])
+        return True
+
+    def eidolon_drops(self, relics):
+        """1.5.0: eidolon shards from electrum orbs of every difficulty (EidolonOrbChance % per orb) and from boss
+        chests (EidolonBossChance % per opening): every FixedItemContainer locked until a Boss dies - first and
+        repeat kills - and the Eternal Embers boss orbs. A boss chest gets copies of its loot tables (the
+        originals may also stock ordinary chests); the engine opens ONE of a container's tables per opening, so each
+        copy carries the full chance. Vanilla odds inside every slot are untouched."""
+        if not relics:
+            return
+        orb_pct, boss_pct = drop_chances()
+        shards = self.shard_table(relics)
         n = 0
         for k in sorted(self.R):
-            if 'electrumorbs' not in k or not k.endswith('_loot.dbr') or ORB_TIER not in k:
-                continue
-            loot = self.R[k]
-            slots = []
-            for s_ in range(1, 7):
-                ch = float(get1(loot, 'loot%dChance' % s_, 0) or 0)
-                names = [(j, get1(loot, 'loot%dName%d' % (s_, j), '')) for j in range(1, 40)]
-                names = [(j, x) for j, x in names if x]
-                W = sum(float(get1(loot, 'loot%dWeight%d' % (s_, j), 0) or 0) for j, _ in names)
-                if ch and W and ch + ORB_CHANCE <= 100:
-                    slots.append((0 if any('relic' in x.lower() for _, x in names) else 1, ch, s_, W, len(names)))
-            if not slots:
-                log('  WARNING: no room for eidolons in %s' % k)
-                continue
-            _, ch, s_, W, cnt = min(slots)
-            w = max(1, int(round(ORB_CHANCE * W / ch)))    # weights are ints; the chance absorbs the rounding
-            j = next(j for j in range(1, 40) if not get1(loot, 'loot%dName%d' % (s_, j), ''))
-            setv(loot, 'loot%dName%d' % (s_, j), shards['name'])
-            setv(loot, 'loot%dWeight%d' % (s_, j), w, 0)
-            setv(loot, 'loot%dChance' % s_, ch * (W + w) / W, 1)   # every vanilla entry keeps ch*w_i/W exactly
-            self.db.mark(loot['name']); n += 1
-        log('  eidolon shards in %d legendary electrum orbs, %.1f%% per orb' % (n, ORB_CHANCE))
+            if 'electrumorbs' in k and k.endswith('_loot.dbr') and any(t in k for t in ORB_TIERS) and orb_pct > 0:
+                if self.add_shard(self.R[k], shards, orb_pct):
+                    n += 1
+                else:
+                    log('  WARNING: no room for eidolons in %s' % k)
+        log('  eidolon shards in %d electrum orbs (all difficulties), %g%% per orb' % (n, orb_pct))
+        if boss_pct <= 0:
+            return
+        copies, chests, skipped = {}, 0, 0
+        for k, r in boss_chests(self.R):
+            new = []
+            for t in getv(r, 'tables') or []:
+                tk = key_of(t) if t else ''
+                src = self.R.get(tk)
+                if src is None or not (get1(src, 'templateName', '') or '').lower().endswith('fixeditemloot.tpl'):
+                    new.append(t)
+                    skipped += 1
+                    continue
+                if tk not in copies:
+                    leaf = tk.split(BS)[-1][:-4]
+                    c = self.clone(src['name'], NS + 'bossloot_%s_%s.dbr' % (leaf, hashlib.md5(tk.encode()).hexdigest()[:6]))
+                    setv(c, 'FileDescription', 'TQ Together: boss chest loot %s + eidolon shard %g%%' % (leaf, boss_pct))
+                    copies[tk] = c['name'] if self.add_shard(c, shards, boss_pct) else src['name']
+                new.append(copies[tk])
+            if new != list(getv(r, 'tables') or []):
+                setv(r, 'tables', new)
+                self.db.mark(r['name'])
+                chests += 1
+        log('  eidolon shards in %d boss chests (%d loot tables copied), %g%% per chest%s' % (
+            chests, len(copies), boss_pct, ', %d tables of another kind left alone' % skipped if skipped else ''))
 
     # ---------------------------------------------------------- merchant
     def sell(self, rings):
@@ -1658,7 +1744,7 @@ class Builder(object):
             if vn not in ('templateName', 'Class'):
                 delv(m, vn)
         setv(m, 'FileDescription', 'TQ Together marker: this database was built by TQ Together (inert, never loaded)')
-        self.electrum(self.relics)   # 19.09: nothing on sale any more - eidolons only from legendary electrum orbs
+        self.eidolon_drops(self.relics)   # 19.09: nothing on sale any more - eidolons only from legendary electrum orbs
         os.makedirs(OUT, exist_ok=True)
         for lg in ('ru', 'en'):
             write_text_file(os.path.join(OUT, 'text', lg, 'zz_tqmod.txt'), self.text[lg])
@@ -1754,8 +1840,8 @@ def inputs_fingerprint():
     h.update(json.dumps(sorted(referenced_cids())).encode('utf-8'))
     import tweaks
     h.update(tweaks.fingerprint().encode('utf-8'))
-    h.update(('party burden %d, hero life %g, boss %g, damage %g, hero %s, party %g' % (
-        party_burden(), HERO_LIFE, HERO_BOSS, HERO_DAMAGE, HERO_NAME, PARTY_EXTRA)).encode('utf-8'))
+    h.update(('party burden %d, hero life %g, boss %g, damage %g, hero %s, party %g, drops %s' % (
+        party_burden(), HERO_LIFE, HERO_BOSS, HERO_DAMAGE, HERO_NAME, PARTY_EXTRA, drop_chances())).encode('utf-8'))
     return h.hexdigest()
 
 

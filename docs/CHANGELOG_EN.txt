@@ -1,6 +1,14 @@
 TQ Together - changelog
 =======================
 
+1.5.0
+- Eidolon shards drop on every difficulty now: electrum orbs of Normal, Epic and Legendary (40% per orb) and boss
+  chests - first and repeat kills of every act boss, plus the boss orbs of Eternal Embers (10% per opening).
+  Ordinary chests are untouched; every other item keeps its original chance. EidolonOrbChance / EidolonBossChance
+  in TQTogether.ini change the rates (0 = off).
+- Fixed: the orb odds counted one item per orb, but an orb gives 7-8 - the advertised "10% per orb" was about 38%
+  in fact. Chances are now computed per opening with the engine's own loot rules.
+
 1.4.0
 - New default difficulty, "party": every companion your hero can summon (a completed eidolon in a worn ring)
   counts as one more player, and monsters, champions and bosses get the game's own co-op scaling for that party

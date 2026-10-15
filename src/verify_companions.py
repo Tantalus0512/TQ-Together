@@ -75,6 +75,12 @@ def base_summary(base_arz):
     return out
 
 
+def getattr_tables(r):
+    """the `tables` list of a container record (strings, empty ones dropped)"""
+    vals, _ = v(r, 'tables') if r is not None else ([], None)
+    return [x for x in vals if isinstance(x, str) and x]
+
+
 def string_table(path):
     """1.3.4, the written database file as the engine reads it: Engine.dll 0x102906d0 gives a string table entry an id
     only if its bytes are new and finds records by that id, so a single repeated entry makes every record after it
@@ -457,19 +463,18 @@ def check(build, base_arz, log=print, touched=(), gear=None):
             for f, want in want_map.items():
                 if c is None or abs(float(g(c, f, -1)) - want) > 1e-3:
                     bad.append('%s: %s %s=%s, want %s' % (k.split(BS)[-1], ctl, f, g(c, f) if c else None, want))
-    # 7g. electrum orbs: legendary ones give exactly ORB_CHANCE % of one eidolon shard, others none,
-    #     and every vanilla entry keeps its absolute probability (chance * weight / total weight)
+    # 7g. electrum orbs of every difficulty: one opening gives an eidolon shard with EidolonOrbChance % (1.5.0: the
+    #     engine's own rules, orb_odds.per_container - 7-8 items, slot by chance / running total), and inside every
+    #     slot each vanilla entry keeps chance * weight / slot weight
     import orb_odds
+    from arz_lazy import LazyArz as _LA
     vanR = summary['orb_loot']
     live_rel = frozenset(k for k in mine if k.endswith('_relic.dbr') and k.split(BS)[-1][:-len('_relic.dbr')] in
                          {p.split(BS)[-1][:-len('_pet.dbr')] for p in pets})
     po = orb_odds.odds(R, live_rel)
-    for name, price, t in orb_odds.orbs(R):
-        e = po(t)
-        want = B.ORB_CHANCE / 100.0 if (B.ORB_TIER.strip('_') in name.lower() and live_rel) else 0.0
-        if abs(e - want) > 2e-4:
-            bad.append('orb %s: eidolon shard odds %.4f, want %.4f' % (name, e, want))
-        nf, of = orb_odds.fields(R[t]), orb_odds.fields(vanR[t])
+    orb_pct, boss_pct = B.drop_chances()
+
+    def kept(name, nf, of):
         for s_ in range(1, 7):
             ch_n, ch_o = float((nf.get('loot%dChance' % s_) or [0])[0]), float((of.get('loot%dChance' % s_) or [0])[0])
             Wn = sum(float((nf.get('loot%dWeight%d' % (s_, j)) or [0])[0]) for j in range(1, 40))
@@ -481,8 +486,45 @@ def check(build, base_arz, log=print, touched=(), gear=None):
                 pn = ch_n * float((nf.get('loot%dWeight%d' % (s_, j)) or [0])[0]) / Wn if Wn else 0
                 po_ = ch_o * float((of.get('loot%dWeight%d' % (s_, j)) or [0])[0]) / Wo if Wo else 0
                 if abs(pn - po_) > 1e-6:
-                    bad.append('orb %s slot %d: vanilla entry %s odds %.6f -> %.6f' % (name, s_, x.split(BS)[-1], po_, pn))
-    log('orbs: legendary %.1f%% eidolon shard, vanilla entries unchanged' % B.ORB_CHANCE)
+                    bad.append('%s slot %d: vanilla entry %s odds %.6f -> %.6f' % (name, s_, x.split(BS)[-1], po_, pn))
+    for name, price, t in orb_odds.orbs(R):
+        e = orb_odds.per_container(R, t, live_rel, po)
+        want = orb_pct / 100.0 if live_rel else 0.0
+        if abs(e - want) > 5e-3:
+            bad.append('orb %s: eidolon shard per orb %.4f, want %.4f' % (name, e, want))
+        kept('orb ' + name, orb_odds.fields(R[t]), orb_odds.fields(vanR[t]))
+    log('orbs: %g%% eidolon shard per orb on every difficulty, vanilla entries unchanged' % orb_pct)
+    # 7i. boss chests (1.5.0): every table a boss guards is our copy giving EidolonBossChance % per opening, the copy
+    #     keeps the original's odds, and no other container uses the copies (ordinary chests stay vanilla)
+    baseR = _LA.load(base_arz).records
+    n_chests, guarded = 0, set()
+    bosses = B.boss_chests(R)
+    for k, r in bosses:
+        orig = baseR.get(k)
+        for i, t in enumerate(getattr_tables(r)):
+            tk = key(t)
+            if not tk.startswith(NS + 'bossloot_'):
+                if live_rel and boss_pct > 0 and (g(R.get(tk) or {'vars': []}, 'templateName') or '').lower().endswith('fixeditemloot.tpl'):
+                    bad.append('boss chest %s: table %s has no eidolon shard' % (k.split(BS)[-1], tk.split(BS)[-1]))
+                continue
+            guarded.add(tk)
+            e = orb_odds.per_container(R, tk, live_rel, po)
+            if abs(e - boss_pct / 100.0) > 5e-3:
+                bad.append('boss chest %s: eidolon shard per opening %.4f, want %.4f' % (k.split(BS)[-1], e, boss_pct / 100.0))
+            ot = getattr_tables(orig)[i] if orig is not None and i < len(getattr_tables(orig)) else ''
+            if not ot or key(ot) not in baseR:
+                bad.append('boss chest %s: copy %s without its original' % (k.split(BS)[-1], tk.split(BS)[-1]))
+            else:
+                kept('boss chest ' + k.split(BS)[-1], orb_odds.fields(R[tk]), orb_odds.fields(baseR[key(ot)]))
+        n_chests += 1
+    users = [k for k in R if not k.startswith(NS) and ('container' in k or 'chest' in k or 'orb' in k)
+             and g(R[k], 'Class') == 'FixedItemContainer' and any(key(t).startswith(NS + 'bossloot_') for t in getattr_tables(R[k]))]
+    boss_keys = {k for k, _ in bosses}
+    for k in users:
+        if k not in boss_keys:
+            bad.append('container %s (not a boss chest) uses an eidolon boss table' % k.split(BS)[-1])
+    log('boss chests: %d, %d loot tables with %g%% eidolon shard per opening, ordinary chests untouched' % (
+        n_chests, len(guarded), boss_pct))
     # 7c. relic chain: relic -> bonus table -> affix -> itemSkillName -> summon skill -> spawnObjects -> pet
     live_cids = {k.split(BS)[-1][:-len('_pet.dbr')] for k in pets}
     relics = [k for k in mine if k.endswith('_relic.dbr') and k.split(BS)[-1][:-len('_relic.dbr')] in live_cids]
