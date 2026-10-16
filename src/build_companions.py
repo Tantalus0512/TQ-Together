@@ -205,6 +205,7 @@ HERO_BOSS = 1.0   # 1.1.3: bosses x this on top (TQTogether.ini AutoLifeBoss) - 
 HERO_DAMAGE = 1.0  # 1.1.5: Legendary monster damage modifiers and offensive ability x this (= life ^ AutoDamagePower)
 HERO_NAME = ''     # 1.2.0: the hero about to be played (choose_hero): his pet bonuses are cancelled on the companions
 PARTY_EXTRA = 0.0  # 1.4.0: extra players the summoned companions count as (choose_hero, TQTogether.ini Difficulty=party)
+HERO_LEVEL = 0     # 1.6.0: level of the hero about to be played (choose_hero) - boss souls come at this level
 
 
 def party_burden():
@@ -226,16 +227,26 @@ def drop_chances():
     return tuple(out)
 
 
-def boss_monsters(R):
-    """[(key, record)] of every monster classified Boss that drops loot itself (dropItems not 0)"""
+def boss_monsters(R, rows=None):
+    """[(key, record)] of every monster classified Boss that drops loot itself (dropItems not 0). rows: the souls'
+    scan of Boss/Hero records [(key, classification, Class, tag, dropItems)] - the same answer without reading
+    10k monster records again"""
+    if rows is not None:
+        return [(k, R[k]) for k, mc, cls, tag, drop in rows
+                if mc == 'Boss' and str(drop) not in ('0', 'False') and k in R]
     out = []
+    few = getattr(R, 'fields', None)      # 1.6.0: two fields per record, nothing cached (the save re-encodes the cache)
     for k in sorted(R):
         if 'creature' not in k:
             continue
-        r = R[k]
-        if (get1(r, 'monsterClassification', '') or '') != 'Boss' or str(get1(r, 'dropItems', 1)) in ('0', 'False'):
+        if few is not None:
+            F = few(k, ('monsterClassification', 'dropItems'))
+            mc, drop = (F.get('monsterclassification') or [''])[0], (F.get('dropitems') or [1])[0]
+        else:
+            mc, drop = get1(R[k], 'monsterClassification', ''), get1(R[k], 'dropItems', 1)
+        if (mc or '') != 'Boss' or str(drop) in ('0', 'False'):
             continue
-        out.append((k, r))
+        out.append((k, R[k]))
     return out
 
 
@@ -433,6 +444,7 @@ def load_base(base_arz):
 class Builder(object):
     def __init__(self, base_arz):
         log('loading the game database ...')
+        self.base_arz = base_arz
         self.db = DB(LazyArz.load(base_arz))   # lazy: ~100 MB instead of several GB
         self.R = self.db.arz.records
         self.vt = {'ru': load_game_text('ru'), 'en': load_game_text('en')}
@@ -442,6 +454,7 @@ class Builder(object):
         self.registry, self.folders = load_registry()
         self.known = set(self.registry)
         self.gear_ledger = {}      # pet record -> what its gear was baked from (verify_companions 7i)
+        self.soul_ledger = None    # 1.6.0: boss souls built and where they drop (souls.check)
 
     def tag(self, name, ru, en):
         self.text['ru'].append((name, ru)); self.text['en'].append((name, en))
@@ -1597,10 +1610,18 @@ class Builder(object):
         return shards
 
     def add_shard(self, loot, shards, pct):
-        """put the shard table into a FixedItemLoot record so that ONE opening gives a shard with pct % (1.5.0):
-        each of its N items (numSpawn equations) picks a slot by chance / running total of the six chances, so a
-        per-item p with mean over N of 1-(1-p)^N = pct is solved, and the chance added to one slot is
-        delta = p * total / (1 - p). Inside that slot every vanilla entry keeps chance x weight / slot weight."""
+        return self.add_shards(loot, [(shards['name'], pct)])
+
+    def add_shards(self, loot, entries):
+        """put shard tables [(table name, pct)] into a FixedItemLoot record so that ONE opening gives each with its
+        pct % (1.5.0): each of the record's N items (numSpawn equations) picks a slot by chance / running total of the
+        six chances, so a per-item p_i with mean over N of 1-(1-p_i)^N = pct_i is solved for each, and the chance
+        added to one slot is delta = P * total / (1 - P), P = sum of the p_i, split by weight. 1.6.0: several at once
+        (the eidolon shard and the soul of the orb's region) - added one after the other, the second would dilute
+        the first. Inside that slot every vanilla entry keeps chance x weight / slot weight."""
+        entries = [(t, pct) for t, pct in entries if pct > 0]
+        if not entries:
+            return False
         total = sum(float(get1(loot, 'loot%dChance' % s_, 0) or 0) for s_ in range(1, 7))
         slots = []
         for s_ in range(1, 7):
@@ -1613,47 +1634,77 @@ class Builder(object):
         if not slots or total <= 0:
             return False
         ns = orb_odds.spawn_counts({vn: vals for vn, vt, vals in loot['vars']})
-        lo, hi = 0.0, 1.0
-        for _ in range(60):                          # mean over N of 1 - (1 - p)^N is monotone in p
-            mid = (lo + hi) / 2
-            if sum(1 - (1 - mid) ** n for n in ns) / len(ns) < pct / 100.0:
-                lo = mid
-            else:
-                hi = mid
-        p = (lo + hi) / 2
-        delta = p * total / (1 - p)
+        ps = []
+        for _t, pct in entries:
+            lo, hi = 0.0, 1.0
+            for _ in range(60):                      # mean over N of 1 - (1 - p)^N is monotone in p
+                mid = (lo + hi) / 2
+                if sum(1 - (1 - mid) ** n for n in ns) / len(ns) < pct / 100.0:
+                    lo = mid
+                else:
+                    hi = mid
+            ps.append((lo + hi) / 2)
+        P = sum(ps)
+        delta = P * total / (1 - P)
         _, ch, s_, W = min(slots)
-        w = max(1, int(round(delta * W / ch)))       # weights are ints; the slot chance absorbs the rounding
-        j = next(j for j in range(1, 40) if not get1(loot, 'loot%dName%d' % (s_, j), ''))
-        setv(loot, 'loot%dName%d' % (s_, j), shards['name'])
-        setv(loot, 'loot%dWeight%d' % (s_, j), w, 0)
-        setv(loot, 'loot%dChance' % s_, ch * (W + w) / W, 1)     # every vanilla entry keeps ch*w_i/W exactly
+        free = [j for j in range(1, 40) if not get1(loot, 'loot%dName%d' % (s_, j), '')]
+        if len(free) < len(entries):
+            return False
+        # 1.6.0: small vanilla weights would round our shares coarsely - the slot's weights are scaled up first
+        # (chance x weight / slot weight of every vanilla entry does not change)
+        smallest = delta * min(ps) / P * W / ch
+        if smallest < 2000:
+            m = int(-(-2000 // max(smallest, 1e-9)))
+            for j in range(1, 40):
+                if get1(loot, 'loot%dName%d' % (s_, j), ''):
+                    setv(loot, 'loot%dWeight%d' % (s_, j), int(float(get1(loot, 'loot%dWeight%d' % (s_, j), 0) or 0)) * m, 0)
+            W *= m
+        added = 0
+        for (t, pct), p, j in zip(entries, ps, free):
+            # weights are ints; scaled up so that two shards in one slot keep their ratio (eidolon 40 % next to a
+            # soul 10 %), the slot chance absorbs the rounding
+            w = max(1, int(round(delta * p / P * W / ch)))
+            setv(loot, 'loot%dName%d' % (s_, j), t)
+            setv(loot, 'loot%dWeight%d' % (s_, j), w, 0)
+            added += w
+        setv(loot, 'loot%dChance' % s_, ch * (W + added) / W, 1)   # every vanilla entry keeps ch*w_i/W exactly
         self.db.mark(loot['name'])
         return True
 
-    def eidolon_drops(self, relics):
+    def eidolon_drops(self, relics, soul_orbs=None):
         """1.5.0: eidolon shards from electrum orbs of every difficulty (EidolonOrbChance % per orb). 1.5.1: and from
         the boss itself when it dies (EidolonBossChance % per kill), owner 15.10 - the chest felt like nothing ever
         dropped: an empty Misc loot slot of every Boss monster (lootMiscN / chanceToEquipMiscN, as ordinary monsters
         carry potions and relics) gets the shard table. Act bosses keep their Misc chances at 0 and give their loot
         through the boss chest, so their own loot is unchanged; bosses that drop nothing themselves (dropItems 0:
-        the early stages of multi-stage bosses) are left out."""
-        if not relics:
-            return
+        the early stages of multi-stage bosses) are left out.
+        1.6.0: soul_orbs {region: (table, % per orb)} - the boss souls of the orb's region go into the same orbs in
+        the same addition (souls.py)."""
         orb_pct, boss_pct = drop_chances()
-        shards = self.shard_table(relics)
+        soul_orbs = soul_orbs or {}
+        if not relics and not soul_orbs:
+            return
+        shards = self.shard_table(relics) if relics else None
         n = 0
         for k in sorted(self.R):
-            if 'electrumorbs' in k and k.endswith('_loot.dbr') and any(t in k for t in ORB_TIERS) and orb_pct > 0:
-                if self.add_shard(self.R[k], shards, orb_pct):
+            if 'electrumorbs' in k and k.endswith('_loot.dbr') and any(t in k for t in ORB_TIERS):
+                m = re.search(r'x4_electrumorb_(\d_[a-z]+)_', k.split(BS)[-1])
+                entries = [(shards['name'], orb_pct)] if shards is not None and orb_pct > 0 else []
+                if m and m.group(1) in soul_orbs:
+                    entries.append(soul_orbs[m.group(1)])
+                if not entries:
+                    continue
+                if self.add_shards(self.R[k], entries):
                     n += 1
                 else:
-                    log('  WARNING: no room for eidolons in %s' % k)
-        log('  eidolon shards in %d electrum orbs (all difficulties), %g%% per orb' % (n, orb_pct))
-        if boss_pct <= 0:
+                    log('  WARNING: no room for eidolons / souls in %s' % k)
+        log('  eidolon shards%s in %d electrum orbs (all difficulties), %g%% per orb' % (
+            ' and boss souls' if soul_orbs else '', n, orb_pct if shards is not None else 0))
+        if boss_pct <= 0 or shards is None:
             return
         done, full = 0, []
-        for k, r in boss_monsters(self.R):
+        rows = self.souls.scan() if getattr(self, 'souls', None) is not None else None
+        for k, r in boss_monsters(self.R, rows):
             n = free_misc_slot(r)
             if n is None:
                 full.append(k.split(BS)[-1])
@@ -1677,10 +1728,16 @@ class Builder(object):
             setv(shop, 'lootName%d' % i, r)
             setv(shop, 'lootWeight%d' % i, 100, 0)
         targets = set()
-        for k, r in self.R.items():
-            for vn, vt, vals in r['vars']:
-                if vt == 2 and vn.startswith('marketRingTable'):
-                    targets.update(key_of(v) for v in vals if v)
+        # 1.6.0: merchants only (all 171 vanilla ring merchants sit under npc / merchant paths), a few fields each -
+        # R.items() decoded and cached all 74k records, and the save re-encoded them (2 minutes)
+        names = ['marketRingTable%d' % i for i in range(1, 9)]
+        few = getattr(self.R, 'fields', None)
+        for k in list(self.R):
+            if 'npc' not in k and 'merchant' not in k:
+                continue
+            F = few(k, names) if few else {vn.lower(): vals for vn, vt, vals in self.R[k]['vars']}
+            for n in names:
+                targets.update(key_of(v) for v in (F.get(n.lower()) or []) if isinstance(v, str) and v)
         n_items = n_master = 0
         for k in sorted(targets):
             lt = self.R.get(k)
@@ -1745,7 +1802,14 @@ class Builder(object):
             if vn not in ('templateName', 'Class'):
                 delv(m, vn)
         setv(m, 'FileDescription', 'TQ Together marker: this database was built by TQ Together (inert, never loaded)')
-        self.eidolon_drops(self.relics)   # 19.09: nothing on sale any more - eidolons only from legendary electrum orbs
+        # 1.6.0: boss souls - records first, then the eidolons and the souls go into the orbs together, then the
+        # souls' kill / chest drops (they share the eidolon shard's loot slot of a boss)
+        import souls
+        self.souls = souls.Souls(self, HERO_LEVEL, HERO_NAME)
+        self.souls.build()
+        self.eidolon_drops(self.relics, self.souls.orb_entries)
+        self.souls.place()
+        self.soul_ledger = self.souls.ledger
         os.makedirs(OUT, exist_ok=True)
         for lg in ('ru', 'en'):
             write_text_file(os.path.join(OUT, 'text', lg, 'zz_tqmod.txt'), self.text[lg])
@@ -1843,6 +1907,8 @@ def inputs_fingerprint():
     h.update(tweaks.fingerprint().encode('utf-8'))
     h.update(('party burden %d, hero life %g, boss %g, damage %g, hero %s, party %g, drops %s' % (
         party_burden(), HERO_LIFE, HERO_BOSS, HERO_DAMAGE, HERO_NAME, PARTY_EXTRA, drop_chances())).encode('utf-8'))
+    import souls
+    h.update(souls.fingerprint().encode('utf-8'))      # 1.6.0: soul settings and the hero's level
     return h.hexdigest()
 
 
@@ -1868,7 +1934,7 @@ if __name__ == '__main__':      # development entry; players use tq_together.py 
         if installer.game_running():
             raise SystemExit('Titan Quest is running - close it first.')
         problems = verify_companions.check(os.path.join(OUT, 'database.arz'), base, log, touched=b.tweak_touched,
-                                           gear=b.gear_ledger)
+                                           gear=b.gear_ledger, souls=b.soul_ledger)
         problems += verify_companions.string_table(os.path.join(OUT, 'database.arz'))
         if problems:
             raise SystemExit('\n'.join(problems) + '\nverify failed - not installed.')

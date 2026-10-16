@@ -36,7 +36,8 @@ py -3 build_exe.py
 ```
 
 The result is `dist/TQ Together <version>/` and `dist/TQ_Together_<version>.zip` — exactly the archive published on
-Nexus Mods. `_internal/base_library.zip` inside it is PyInstaller's standard bundle of the Python standard library.
+Nexus Mods. Since 1.6.6 the exe is a single file (PyInstaller `--onefile`): the package holds no archive inside it,
+which Nexus Mods requires; `build_exe.py` refuses to package one.
 
 Run from source without building: `py -3 src/tq_together.py [--uninstall | --rebuild | --no-launch]`.
 
@@ -54,6 +55,8 @@ Run from source without building: `py -3 src/tq_together.py [--uninstall | --reb
 | `src/orb_odds.py` | exact drop odds of electrum orbs and boss chests by the engine's loot rules (used by the self-check) |
 | `src/tweaks.py` | the player's own database tweaks (JSON files), applied under the companions |
 | `src/hero_power.py` | a hero's damage per second as the character window shows it (auto difficulty) |
+| `src/souls.py` | enslaved boss souls: every boss and hero monster as an amulet relic that summons it, at the hero's level |
+| `src/soul_anims.py` | root-motion speed and length of the animations the souls use (generated from the game's archives) |
 
 ## License
 

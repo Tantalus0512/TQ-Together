@@ -18,8 +18,8 @@ VER = paths.VERSION
 NAME = 'TQ Together %s' % VER
 DIST = os.path.join(HERE, 'dist')
 WORK = os.path.join(HERE, 'build')
-MODULES = ['paths', 'installer', 'build_companions', 'verify_companions', 'tweaks', 'orb_odds', 'hero_power', 'arz', 'arz_lazy', 'tqlib',
-           'chr_reader']
+MODULES = ['paths', 'installer', 'build_companions', 'verify_companions', 'tweaks', 'orb_odds', 'hero_power', 'souls', 'soul_anims', 'arz',
+           'arz_lazy', 'tqlib', 'chr_reader']
 EXCLUDE = ['ssl', '_ssl', 'socket', '_socket', 'select', 'selectors', 'urllib', 'http', 'email', 'xml', 'xmlrpc',
            'ftplib', 'smtplib', 'mailbox', 'bz2', '_bz2', 'lzma', '_lzma', '_zstd', 'compression', 'decimal',
            '_decimal', 'unicodedata', '_hashlib', 'tkinter', 'asyncio', 'multiprocessing', 'sqlite3', 'pydoc',
@@ -50,7 +50,9 @@ def main():
     os.makedirs(WORK)
     vf = os.path.join(WORK, 'version.txt')
     version_file(vf)
-    cmd = [sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean', '--console', '--onedir',
+    # --onefile (1.6.6): the onedir build carried _internal\base_library.zip, an archive inside the mod archive, which
+    # Nexus Mods rejects ("we reject any upload that features additional archives inside the mod structure")
+    cmd = [sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean', '--console', '--onefile',
            '--name', 'TQTogether', '--distpath', os.path.join(WORK, 'pyi_dist'), '--workpath', os.path.join(WORK, 'pyi'),
            '--specpath', WORK, '--paths', SRC, '--version-file', vf, '--noupx']
     cmd += sum([['--hidden-import', m] for m in MODULES], [])
@@ -63,7 +65,8 @@ def main():
 
     out = os.path.join(DIST, NAME)
     shutil.rmtree(out, ignore_errors=True)
-    shutil.copytree(os.path.join(WORK, 'pyi_dist', 'TQTogether'), out)
+    os.makedirs(out)
+    shutil.copy2(os.path.join(WORK, 'pyi_dist', 'TQTogether.exe'), os.path.join(out, 'TQTogether.exe'))
     for f in ('README_EN.txt', 'README_RU.txt', 'CHANGELOG_EN.txt', 'CHANGELOG_RU.txt'):
         shutil.copy2(os.path.join(HERE, 'docs', f), os.path.join(out, f))
     with open(os.path.join(out, 'Uninstall TQ Together.bat'), 'w', newline='\r\n', encoding='ascii') as f:
@@ -76,8 +79,29 @@ def main():
                 '; party (default) | power | off\n'
                 '; Difficulty=party\n'
                 '; one companion = this many players / один соратник = столько игроков\n'
-                '; CompanionPlayers=1\n')
+                '; CompanionPlayers=1\n'
+                '; Enslaved boss souls (README: Enslaved boss souls) - shards per soul. Do not change them once you collect: a soul half done\n'
+                '; with the old number would complete without its summon.\n'
+                '; Порабощённые души боссов (README: Порабощённые души) - осколков на душу. Не меняйте, когда уже собираете: недособранная душа\n'
+                '; со старым числом соберётся без призыва.\n'
+                '; SoulBossShards=3\n'
+                '; SoulHeroShards=2\n'
+                '; % per kill / за убийство; % per boss chest opening / за сундук босса; % per electrum orb / за сферу\n'
+                '; SoulBossChance=15\n'
+                '; SoulHeroChance=12\n'
+                '; SoulChestChance=15\n'
+                '; SoulOrbChance=10\n'
+                '; soul life, % / здоровье душ, %\n'
+                '; SoulLife=100\n'
+                '; 0 = no soul drops (souls already collected keep working) / 0 = души не падают (собранные работают)\n'
+                '; Souls=1\n'
+                '; SoulHeroes=1\n')
     shutil.copytree(SRC, os.path.join(out, 'src'), ignore=shutil.ignore_patterns('__pycache__'))
+    # Nexus Mods rejects an archive inside the mod archive (support, 16.10.2026): none may ship
+    inner = [os.path.relpath(os.path.join(r, fn), out) for r, ds, fs in os.walk(out) for fn in fs
+             if fn.lower().endswith(('.zip', '.7z', '.rar', '.pyz', '.tar', '.gz', '.cab', '.arc'))]
+    if inner:
+        raise SystemExit('archives inside the package (Nexus rejects them): %s' % inner)
     zp = os.path.join(DIST, 'TQ_Together_%s.zip' % VER)
     if os.path.exists(zp):
         os.remove(zp)

@@ -83,6 +83,41 @@ Deleted heroes
   More places: ScanPaths=folder1;folder2 in TQTogether.ini.
 
 
+ENSLAVED BOSS SOULS (1.6.6)
+---------------------------
+Enslaved Soul: [boss name]
+  A relic of 3 shards for a boss, 2 for a hero monster (yellow name). Shards of one soul combine like ordinary relic
+  shards; the completed soul fits the AMULET only and grants "Summon Enslaved Soul: [name]". The rings stay with the
+  eidolons: two companions and one soul at a time. 78 bosses and 301 hero monsters have a soul.
+
+Where to get them
+  - From the boss or hero monster itself when it dies: 15% per boss fight, 12% per hero (SoulBossChance=,
+    SoulHeroChance=). A fight of several parts (Hades' forms, the Pharaoh's Honor Guard, Tiamat's stages) gives
+    the chance per fight.
+  - The gods of Asgard, Ylva, Mimir, Thrym and most Eternal Embers bosses drop nothing themselves - their souls are
+    in the boss chest, 15% per opening (SoulChestChance=). Loot dropped in the Tartarus arena vanishes, so the
+    Tartarus soul is in his reward orb as well.
+  - Electrum orbs: 10% per orb (SoulOrbChance=) for the soul of a random boss of the orb's land (Antiquity, Hades,
+    Scandia, Atlantis, Jade Emperor, Thebes). Hero monster souls are not in the orbs.
+  Every other item keeps its chance. Shards of one soul drop on every difficulty and stack together.
+
+The soul in battle
+  - it is the boss itself with its own skills and AI, but a pet: the pet panel, stances, dismiss; no boss music,
+    no next stage on death, no boss-only bonuses (+100% damage on Legendary);
+  - it comes at the level of the hero you play: attributes and skill levels grow from the boss's Legendary level
+    to yours along the game's own curve, so early bosses are not weak late;
+  - life is one value like an ordinary pet's; the spread between bosses is narrowed (weakest 0.7, toughest 1.5 of
+    the average), hero monster souls are weaker (0.4-1). The average boss at level 85 has about 24,000 on
+    Legendary. SoulLife= (in %) scales it all;
+  - big bosses are shrunk to 1.3 (SoulMaxScale=) to fit through doors; giants slow by design (Tartarus) run,
+    strike and cast no slower than Arachne (measured on their animations); a soul leaves no boss chest when it dies;
+  - every soul counts as one more companion for the "party" difficulty;
+  - souls with a special engine class (Hades, Cerberus, Megalesios, Ormenos, the Honor Guard) are not tested in game.
+  Report: build\souls.txt in the data folder - where each soul drops, its life and level.
+  Do not change the shard counts once you collect: a soul half done with the old count would complete without
+  its summon. Souls=0 / SoulHeroes=0 stop the drops; collected souls keep working.
+
+
 EPIC / LEGENDARY RINGS
 ----------------------
 The game does not allow relics in Epic or Legendary (purple) items. Eidolons follow the same rule.

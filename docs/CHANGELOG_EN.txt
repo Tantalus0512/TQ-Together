@@ -1,6 +1,19 @@
 TQ Together - changelog
 =======================
 
+1.6.6
+- Enslaved boss souls: every boss (78) and hero monster (301) drops "Enslaved Soul: [name]" - a relic of 3
+  shards for a boss, 2 for a hero. The completed soul fits an amulet and summons that boss as a pet companion, at
+  your hero's level. It drops from the boss itself (15% per fight, heroes 12%), from the chests of bosses that drop
+  nothing themselves (15%) and from the electrum orbs of its land (10%). Every other item keeps its chance.
+  Details: README, "Enslaved boss souls".
+- A soul counts as a companion for the "party" difficulty.
+- A soul leaves no boss chest when it dies. Slow giants (Tartarus and others) as souls run, strike and cast no
+  slower than Arachne: speed is measured on the game's own animations (and cast speed), only what is slower is
+  sped up.
+- The Tartarus soul also drops from his reward orb: in the arena, loot dropped by monsters vanishes.
+- Faster database build: scanning thousands of monster records no longer repacks them all.
+
 1.5.1
 - Bosses drop eidolon shards themselves when they die - 20% per kill (EidolonBossChance=), Nessus, Arachne, the
   Telkines, the Hydra, Charon and about two hundred more - instead of 10% from their chests in 1.5.0. Boss chests

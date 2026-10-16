@@ -124,8 +124,18 @@ def choose_hero(args, base_arz=None):
                 out.append((next((x for x in heroes if x.lower() == f[1:].lower()), f[1:]), p))
         return out
 
+    def souls_of(h):
+        """1.6.0: completed boss souls in the hero's worn amulet - each one more companion"""
+        try:
+            worn = B.parse_equipment(paths_of[h])
+        except OSError:
+            return 0
+        return sum(1 for it in worn for rel, bon in (('relic', 'relic_bonus'), ('relic2', 'relic_bonus2'))
+                   if re.search(r'companions\\souls\\[a-z0-9_]+_soul\.dbr$', (it.get(rel) or '').lower()) and it.get(bon))
+
     per = min(5.0, max(0.0, num('companionplayers', 1.0)))
-    extra = lambda h: min(5.0, (len(members(h)) - 1) * per)
+    extra = lambda h: min(5.0, (len(members(h)) - 1 + souls_of(h)) * per)
+    soul_note = lambda h: ' + %d soul / душа' % souls_of(h) if souls_of(h) else ''
     if mode == 'power':
         import hero_power as H
         if base_arz:
@@ -156,7 +166,7 @@ def choose_hero(args, base_arz=None):
             ', вручную' if h.lower() in lives else '')
         note = '   (numbers = damage per second as in the character window / урон в секунду, как в окне персонажа)'
     else:
-        show = lambda h: '%s -> %s' % (' + '.join(n for n, _ in members(h)),
+        show = lambda h: '%s%s -> %s' % (' + '.join(n for n, _ in members(h)), soul_note(h),
                                         'vanilla monsters / обычные монстры' if mode == 'off' or extra(h) <= 0 else
                                         'monsters as for %g players / монстры как для %g игроков' % (1 + extra(h), 1 + extra(h)))
         note = None
@@ -176,6 +186,10 @@ def choose_hero(args, base_arz=None):
             ans = ''
         pick = heroes[int(ans) - 1] if ans.isdigit() and 1 <= int(ans) <= len(heroes) else heroes[0]
     B.HERO_NAME = pick
+    try:                                       # 1.6.0: boss souls come at the hero's level
+        B.HERO_LEVEL = int(B.read_char(paths_of[pick])['level'])
+    except Exception:
+        B.HERO_LEVEL = 0
     if mode == 'power':
         B.HERO_LIFE = life(pick)
         B.HERO_BOSS = max(0.1, num('autolifeboss', 1))
@@ -270,7 +284,8 @@ def main():
         B.LOG = LOG_LINES
         b = B.Builder(base)
         b.run()
-        problems = verify_companions.check(b.db.arz.records, base, log, touched=b.tweak_touched, gear=b.gear_ledger)
+        problems = verify_companions.check(b.db.arz.records, base, log, touched=b.tweak_touched, gear=b.gear_ledger,
+                                           souls=b.soul_ledger)
         problems += verify_companions.string_table(os.path.join(B.OUT, 'database.arz'))
         if problems:
             log('\n'.join(problems))

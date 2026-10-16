@@ -107,7 +107,8 @@ class DB(object):
         return r
 
     def clone(self, src, dst, mark=True):
-        s = self.need(src)
+        peek = getattr(self.arz.records, 'peek', None)     # lazy database: the source is only read, keep it packed
+        s = peek(key_of(src)) if peek is not None and key_of(src) in self.arz.records else self.need(src)
         r = {'name': dst, 'type': s['type'],
              'vars': [(vn, vt, list(vals)) for vn, vt, vals in s['vars']]}
         self.put(r)

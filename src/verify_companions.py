@@ -323,9 +323,10 @@ def check_gear(R, gear, log):
     return bad
 
 
-def check(build, base_arz, log=print, touched=(), gear=None):
+def check(build, base_arz, log=print, touched=(), gear=None, souls=None):
     """-> list of problems (empty = ALL CHECKS PASSED). build = built database path or its records dict,
-    base_arz = the untouched game database, gear = Builder.gear_ledger (the 7i check runs only when given)."""
+    base_arz = the untouched game database, gear = Builder.gear_ledger (the 7i check runs only when given),
+    souls = Builder.soul_ledger (1.6.0 boss souls: souls.check)."""
     import collections
     R = LazyArz.load(build).records if isinstance(build, str) else build
     NS = B.NS
@@ -498,24 +499,31 @@ def check(build, base_arz, log=print, touched=(), gear=None):
     #     EidolonBossChance %, and every other Misc field is exactly the original's (its own loot unchanged)
     baseR = _LA.load(base_arz).records
     shards_key = NS + 'eidolon_shards.dbr'
-    misc = lambda r_: {vn: vals for vn, vt, vals in r_['vars'] if 'Misc' in vn and vals and any(x not in (0, 0.0, '') for x in vals)}
+    # 1.6.0: compared as % per kill (chance x weight / weights of the entries with an item), not field by field: a
+    # boss soul may share the eidolon shard's slot (souls.add_misc rewrites the weights, every % stays). A stray
+    # vanilla weight without an item (Typhon's chanceToEquipMisc1Item1 80) counts for nothing either way.
+    import souls as S
+    soul_tables = set()
+    for m in (souls or {}).get('misc', {}).values():
+        soul_tables.update((t,) for t in m)
     n_boss = n_drop = 0
     for k, r in B.boss_monsters(R):
         n_boss += 1
-        mine_slots = [vn for vn, vals in misc(r).items() if vn.startswith('lootMisc') and key(vals[0]) == shards_key]
-        orig = misc(baseR[k]) if k in baseR else {}
-        if mine_slots:
+        new, _ = S.misc_slots(r)
+        old = S.misc_slots(baseR[k])[0] if k in baseR else {1: {}, 2: {}, 3: {}}
+        eid = [n for n in (1, 2, 3) if (shards_key,) in new[n]]
+        if eid:
             n_drop += 1
-            n = mine_slots[0][len('lootMisc')]
-            if len(mine_slots) != 1 or abs(float(g(r, 'chanceToEquipMisc%s' % n, 0) or 0) - boss_pct) > 1e-3:
-                bad.append('boss %s: eidolon slot %s, chance %s, want one slot with %g' % (
-                    k.split(BS)[-1], mine_slots, g(r, 'chanceToEquipMisc%s' % n), boss_pct))
-            ours = {'lootMisc%sItem1' % n, 'chanceToEquipMisc%s' % n, 'chanceToEquipMisc%sItem1' % n}
-            # our three fields are left out on both sides: an empty slot may hold a stray vanilla weight (Typhon's
-            # chanceToEquipMisc1Item1 80 with no item and no chance) that the shard's weight replaces
-            if k not in touched and {f: x for f, x in misc(r).items() if f not in ours} != \
-                    {f: x for f, x in orig.items() if f not in ours}:
-                bad.append('boss %s: its own Misc loot changed' % k.split(BS)[-1])
+            if len(eid) != 1 or abs(new[eid[0]][(shards_key,)] - boss_pct) > 0.05:
+                bad.append('boss %s: eidolon in slots %s, %.3f%% per kill, want one slot with %g' % (
+                    k.split(BS)[-1], eid, new[eid[0]][(shards_key,)], boss_pct))
+            if k not in touched:
+                souls_ns = NS + 'souls' + BS          # soul shards: their odds are souls.check's business
+                for n in (1, 2, 3):
+                    extra = {it for it in set(new[n]) - set(old[n]) - {(shards_key,)} - soul_tables
+                             if not (len(it) == 1 and it[0].startswith(souls_ns))}
+                    if any(abs(new[n].get(it, -1.0) - q) > 0.02 for it, q in old[n].items()) or extra:
+                        bad.append('boss %s: its own Misc loot changed (slot %d)' % (k.split(BS)[-1], n))
         elif live_rel and boss_pct > 0 and B.free_misc_slot(r) is not None:
             bad.append('boss %s: has a free loot slot but no eidolon shard' % k.split(BS)[-1])
     log('bosses: %d drop loot themselves, %d with %g%% eidolon shard per kill, their own loot unchanged' % (
@@ -598,6 +606,8 @@ def check(build, base_arz, log=print, touched=(), gear=None):
     log('registry: %d companions, %d live, %d tombstones' % (len(reg), len(live), len([c for c in reg if c not in live])))
     if gear is not None:
         bad += check_gear(R, gear, log)
+    if souls is not None:
+        bad += S.check(R, baseR, souls, log)
     # 7. summon skills
     for k, r in mine.items():
         if k.endswith('_summon.dbr') and k.split(BS)[-1][:-len('_summon.dbr')] in live_cids:

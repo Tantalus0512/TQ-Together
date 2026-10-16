@@ -57,6 +57,27 @@ class LazyRecords(MutableMapping):
     def decoded(self):
         return self._cache
 
+    def peek(self, k):
+        """a record for READING only: the cached one if it is, else decoded without caching - save() re-encodes every
+        cached record, so a scan over 15k monsters through [] made the save 10x slower (souls 16.10)"""
+        r = self._cache.get(k)
+        if r is not None:
+            return r
+        if k not in self._a.index:
+            raise KeyError(k)
+        return self._a.decode(k)
+
+    def fields(self, k, names):
+        """{lowercase field name: values} of only these fields (case-insensitive) - a scan over thousands of records
+        reads a few fields each without decoding ~600 of them"""
+        r = self._cache.get(k)
+        want = {n.lower() for n in names}
+        if r is not None:
+            return {vn.lower(): vals for vn, vt, vals in r['vars'] if vn.lower() in want}
+        if k not in self._a.index:
+            raise KeyError(k)
+        return self._a.decode_fields(k, want)
+
     def stream(self):
         """(key, record) for every record WITHOUT keeping them in memory (for one-off full scans)"""
         for k in self._a.order:
@@ -119,6 +140,35 @@ class LazyArz(object):
             q += 4 * cnt
             rec['vars'].append((strs[nidx], vt, vals))
         return rec
+
+    def decode_fields(self, key, want):
+        """only the fields named in `want` (lowercase) of one record: the other values are skipped, not unpacked"""
+        ids = getattr(self, '_lower_ids', None)
+        if ids is None:
+            ids = self._lower_ids = {}
+        need = {}
+        for n in want:
+            if n not in ids:
+                ids[n] = frozenset(i for i, s in enumerate(self.strings) if s.lower() == n)
+            for i in ids[n]:
+                need[i] = n
+        si, rtype, off, csize = self.index[key]
+        strs, raw = self.strings, self.raw
+        data = zlib.decompress(raw[24 + off:24 + off + csize])
+        out, q, L = {}, 0, len(data)
+        unpack = struct.unpack_from
+        while q < L:
+            vt, cnt, nidx = unpack('<2hi', data, q); q += 8
+            n = need.get(nidx)
+            if n is not None:
+                if vt == 1:
+                    out[n] = list(unpack('<%df' % cnt, data, q))
+                elif vt == 2:
+                    out[n] = [strs[i] for i in unpack('<%di' % cnt, data, q)]
+                else:
+                    out[n] = list(unpack('<%di' % cnt, data, q))
+            q += 4 * cnt
+        return out
 
     def save(self, path, level=1):
         # the pool is keyed by the BYTES written, not by the Python text: Engine.dll 0x102906d0 gives a string table

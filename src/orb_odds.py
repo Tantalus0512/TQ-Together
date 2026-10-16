@@ -48,7 +48,9 @@ def odds(R, targets):
         f = fields(r)
         cls = (f.get('Class') or [''])[0]
         tpl = (f.get('templateName') or [''])[0].lower()
-        if tpl.endswith('fixeditemloot.tpl'):          # ONE item: slot by chance / running total, then by weight
+        # ONE item: slot by chance / running total, then by weight. 1.6.3: FixedItemLootTartarus.tpl (the Tartarus orb)
+        # has the same loot slots, no count equations
+        if tpl.endswith(('fixeditemloot.tpl', 'fixeditemloottartarus.tpl')):
             tot, total = 0.0, sum(float((f.get('loot%dChance' % n) or [0])[0]) for n in range(1, 7))
             for n in range(1, 7):
                 ch = float((f.get('loot%dChance' % n) or [0])[0])
