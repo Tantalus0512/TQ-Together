@@ -93,6 +93,12 @@ def main():
                 '; SoulOrbChance=10\n'
                 '; soul life, % / здоровье душ, %\n'
                 '; SoulLife=100\n'
+                '; the average boss soul\'s basic attack, % of your hero\'s damage per second (0 = the boss\'s own damage) /\n'
+                '; базовая атака средней души, % от урона в секунду героя (0 - собственный урон босса)\n'
+                '; SoulDamage=30\n'
+                '; no soul animation faster than this many times the boss\'s own (1 = the boss\'s own speeds) /\n'
+                '; ни одна анимация души не быстрее, чем во столько раз от самого босса (1 - скорости самого босса)\n'
+                '; SoulSpeedMax=2\n'
                 '; 0 = no soul drops (souls already collected keep working) / 0 = души не падают (собранные работают)\n'
                 '; Souls=1\n'
                 '; SoulHeroes=1\n')

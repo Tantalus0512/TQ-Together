@@ -206,6 +206,7 @@ HERO_DAMAGE = 1.0  # 1.1.5: Legendary monster damage modifiers and offensive abi
 HERO_NAME = ''     # 1.2.0: the hero about to be played (choose_hero): his pet bonuses are cancelled on the companions
 PARTY_EXTRA = 0.0  # 1.4.0: extra players the summoned companions count as (choose_hero, TQTogether.ini Difficulty=party)
 HERO_LEVEL = 0     # 1.6.0: level of the hero about to be played (choose_hero) - boss souls come at this level
+HERO_DPS = 0.0     # 1.7.0: his character-window damage per second (choose_hero) - boss souls hit SoulDamage % of it
 
 
 def party_burden():
@@ -455,6 +456,8 @@ class Builder(object):
         self.known = set(self.registry)
         self.gear_ledger = {}      # pet record -> what its gear was baked from (verify_companions 7i)
         self.soul_ledger = None    # 1.6.0: boss souls built and where they drop (souls.check)
+        self.hero_run = {}         # 1.7.0: hero name -> run speed bonus % from gear and passives within the cap (souls)
+        self.hero_speed = {}       # 1.7.5: hero name -> {'Attack'|'SpellCast'|'Run': bonus %} the same way (souls)
 
     def tag(self, name, ru, en):
         self.text['ru'].append((name, ru)); self.text['en'].append((name, en))
@@ -618,6 +621,8 @@ class Builder(object):
         budget = self.speed_budget()
         static = self.static_speed(pet, [targets[s]['rec'] for s in order])
         room = {k: max(0.0, budget[k] - static[k]) for k in list(SPEED_KINDS) + list(DODGE_KINDS)}
+        self.last_speed = {k: min(static[k], budget[k]) for k in SPEED_KINDS}    # 1.7.0/1.7.5: the boss souls keep up
+        self.last_run_bonus = self.last_speed['Run']
         trim = []
 
         def capped(sk, lv, label):
@@ -1424,7 +1429,10 @@ class Builder(object):
                 delv(pet, vn)
         for k, nm, lv, cls in overflow:        # 1.1.7: item auto-cast does not run on creatures - nowhere to put them
             dropped.append((k.split(BS)[-1], 'no AI slot left (the 5 special attacks and the chain are taken)'))
+        self.last_run_bonus, self.last_speed = 0.0, {}
         gear, skipped, self.gear_ledger[pet['name'].lower()] = self.bake_gear(cid, pet, equipped)
+        self.hero_run[name] = self.last_run_bonus
+        self.hero_speed[name] = dict(self.last_speed)
         # 1.1.7: item auto-cast skills turned into the companion's own skills; area procs are toggles that the AI
         # switches on once (a buff-self slot, BuffSelfBehavior WhenEnemyIsSeen on our controllers)
         led = self.gear_ledger[pet['name'].lower()]

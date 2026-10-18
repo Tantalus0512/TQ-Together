@@ -103,16 +103,36 @@ Where to get them
 
 The soul in battle
   - it is the boss itself with its own skills and AI, but a pet: the pet panel, stances, dismiss; no boss music,
-    no next stage on death, no boss-only bonuses (+100% damage on Legendary);
+    no next stage on death, no boss damage bonuses (+100% on Legendary), but with the boss's own defence (1.7.4):
+    immune to stun, freeze, sleep, fear, confusion, conversion and slow, resistant to percent-of-life damage, dodge;
   - it comes at the level of the hero you play: attributes and skill levels grow from the boss's Legendary level
     to yours along the game's own curve, so early bosses are not weak late;
   - life is one value like an ordinary pet's; the spread between bosses is narrowed (weakest 0.7, toughest 1.5 of
-    the average), hero monster souls are weaker (0.4-1). The average boss at level 85 has about 24,000 on
-    Legendary. SoulLife= (in %) scales it all;
-  - big bosses are shrunk to 1.3 (SoulMaxScale=) to fit through doors; giants slow by design (Tartarus) run,
-    strike and cast no slower than Arachne (measured on their animations); a soul leaves no boss chest when it dies;
-  - every soul counts as one more companion for the "party" difficulty;
-  - souls with a special engine class (Hades, Cerberus, Megalesios, Ormenos, the Honor Guard) are not tested in game.
+    the average), hero monster souls are weaker (0.4-1). The average boss at level 85 has about 47,000 on
+    Legendary (1.7.1). SoulLife= (in %) scales it all. With the hero difficulty (Difficulty=power) the monsters hit
+    several times harder and more accurately - the souls get as many times more life and defence on Legendary (1.7.4);
+  - damage (1.7.1) follows your hero: the average boss soul's basic attack deals SoulDamage= % (30) of the hero's
+    damage per second from the character window, the soul's skills grow by the same factor, and every soul keeps
+    its rank among the bosses. The hardest hitters are held: a boss at most 1.5 times the average soul (about 45%
+    of the hero's damage), a hero monster at most the average. Bosses with a weak hand (Arachne) fight with poison
+    and skills. Creatures a soul summons itself (Arachne's spiders) are not raised. SoulDamage=0 = the boss's own
+    damage;
+  - big bosses are shrunk to 1.3 (SoulMaxScale=) to fit through doors; a soul leaves no boss chest when it dies,
+    its body dissolves like an eidolon's (1.7.6);
+  - speed (1.7.5): a soul runs as fast as your hero (his run bonus from gear and skills counted); giants (Typhon,
+    Tartarus, the Hydra, the Ancient One and other big bosses) no faster than they run in the game, no slower than
+    7 m/s; souls strike and cast no slower than Arachne and at your hero's pace: his attack and cast speed bonus
+    speeds the soul's strikes, spells and skills up (the damage per second stays: the hand hit is lighter by as
+    much). Projectiles fly faster, like bosses' (+20% on Legendary). But no animation of a soul plays more than 2 times faster
+    than the boss's own (SoulSpeedMax=), so auras and buffs on top do not turn it into mush; a soul slower than the
+    hero catches up by teleport. Speed is measured on the animations the game really plays, animation tables
+    included (Hades, the Ancient One, Cerberus and about a hundred more);
+  - skills that work only on the boss's own arena (the geysers of Cerberus and Charon, the turrets of Loki and
+    Surtr, the telekinesis of Ormenos) are removed from the souls; waves and blasts around the caster are used only
+    where they reach, and a skill wired into the AI twice for the same distances keeps one slot (1.7.7);
+  - Tiamat and the Chaos Apophis Serpent cannot walk: they spit poison from afar, cast their wave at any range and
+    follow the hero by teleport (beyond 14 m);
+  - every soul counts as one more companion for the "party" difficulty.
   Report: build\souls.txt in the data folder - where each soul drops, its life and level.
   Do not change the shard counts once you collect: a soul half done with the old count would complete without
   its summon. Souls=0 / SoulHeroes=0 stop the drops; collected souls keep working.

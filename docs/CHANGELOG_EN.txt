@@ -1,6 +1,72 @@
 TQ Together - changelog
 =======================
 
+1.7.7
+- The souls' AI no longer shakes the air: waves (Talos' flamethrower, the Chimera's breath) and blasts around the
+  caster are used only at distances they reach, not beyond (27 skills of various souls). A skill wired into the AI
+  twice for the same distances keeps one slot, the longest delay (7 souls): Talos no longer flames every second, nor
+  the Chimera breathes. The bosses themselves do so in the game.
+
+1.7.6
+- A dead soul's body dissolves like an eidolon's instead of staying on the ground (Arachne, Nessus, Talos and 278
+  more souls whose bosses just fall or vanish only on their fight script's cue). Their own death effects (Cerberus,
+  Apophis) are untouched.
+
+1.7.5
+- Souls strike and cast at your hero's pace: his attack and cast speed bonus from gear and skills speeds the soul's
+  strikes, spells and skills up by as much, but no more than 2 times the boss's own (SoulSpeedMax), so the animations
+  do not break. The damage per second stays as it was: the hand hit is lighter by as much, skills hit as before but
+  wind up faster. With a hero at +160% attack and +32% cast speed Cerberus bites every 0.6 s instead of 1.2.
+- Soul projectiles fly 10% / 20% faster on Epic / Legendary, like bosses' and monsters' (the game gives pets none).
+
+1.7.4
+- A boss soul gets the boss's own defence back (boss_conversionimmunity, 69 of 78 bosses): immune to stun, freeze,
+  sleep, fear, confusion, conversion and slow, 65-85% resistance to percent-of-life damage, dodge and +50% life on
+  Legendary. Before, it went out together with the boss damage bonuses, and the sirens of Atlantis put Talos to
+  sleep, slowed and converted him. The damage bonuses are still out: a soul's damage comes from the hero.
+- The hero difficulty (Difficulty=power / AutoLife=1) makes the monsters' blows on Legendary HERO_DAMAGE times stronger
+  and more accurate (3.25 for a party of three well-geared heroes). The souls now get as much more life and defence
+  on Legendary, so a monster's blow lands on a soul as in vanilla Legendary: Cerberus has about 228,000 life instead
+  of 70,000. In the "party" difficulty the monsters hit as in the game, and nothing changes there.
+
+1.7.3
+- Soul speed cap: no animation of a soul (run, strike, spell, skill) plays more than 2 times faster than the boss's
+  own (SoulSpeedMax=2). With auras and buffs on top (Heart of Oak: +10% to every ally) the animations no longer turn
+  into mush. Before, only the run had a cap (2.6): Talos' spells played 2.9 times faster, Porcus' skill 4.5. Some
+  souls slow by design are a bit slower now (Tartarus 5.4 m/s, Talos 4.6) - the rest of the way they teleport like
+  every pet.
+
+1.7.2
+- Ormenos no longer tries to throw stalactites by telekinesis: the throw works only in his obsidian cave, elsewhere
+  the AI wasted almost half of its turns on it. The stalactites still fall from above and hit enemies.
+
+1.7.1
+- Soul damage follows your hero: the average boss soul's basic attack deals 30% of the hero's damage per second
+  from the character window (SoulDamage=30), the soul's skills grow by the same factor. The hardest hitters are
+  held: a boss up to 45% of the hero's damage, a hero monster up to 30%. Before, a soul dealt 1-3% of a geared
+  hero's damage and could do next to nothing on the 4-player difficulty.
+- Souls are twice as tough: the average boss soul has about 47,000 life on Legendary (24,000 before), Cerberus about
+  70,000.
+- Soul speed follows your hero: a soul runs as fast as he does, his run bonus counted. Giants (Typhon, Tartarus, the
+  Hydra, the Ancient One and other big bosses) run no faster than they do in the game, and no slower than 7 m/s.
+- Fixed: 106 souls (Hades, the Ancient One, Cerberus and more) are animated from an animation table, but their speed
+  was measured and changed on dead fields of their own record. Hades and Megalesios were slow because of it, the
+  Ancient One a bit too fast. Each such soul now has its own copy of the table.
+- Removed skills that work only on the boss's own arena: the poison geysers from the floor cracks of Cerberus and the
+  Chaos Cerberus, the geysers of Charon and the Omega Telkine, the turrets of Loki and Surtr.
+- Tiamat and the Chaos Apophis Serpent (they cannot walk) spit poison from afar instead of a strike on an 8 s
+  cooldown, and teleport to the hero beyond 14 m. Before, Tiamat stood still after her wave while she was hit, and
+  Apophis neither attacked nor followed.
+- Souls of the heroes from the developers' hidden dungeon carry their names as the game shows them: "Toxeanubis the
+  Slayer", "Ari the Bear", "Anthony the Drunken Warrior" (was "toxeanubistheslayer").
+
+1.6.9
+- Fixed: bosses slow by design (the Ancient One of Atlantis: run speed 0.3) stayed slow as souls - their run animation
+  was sped up beyond what the game accepts. An animation is now sped up no more than monsters have in the game itself,
+  the rest comes from the soul's run speed, and a soul runs at most 2.6 times faster than the boss itself: a giant
+  stays a giant (the Ancient One about 2 m/s; beyond that it teleports to you like any pet).
+- Fixed: a soul drops nothing when it dies (the Ancient One's soul dropped the quest item Magic Compass).
+
 1.6.6
 - Enslaved boss souls: every boss (78) and hero monster (301) drops "Enslaved Soul: [name]" - a relic of 3
   shards for a boss, 2 for a hero. The completed soul fits an amulet and summons that boss as a pet companion, at

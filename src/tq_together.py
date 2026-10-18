@@ -190,6 +190,14 @@ def choose_hero(args, base_arz=None):
         B.HERO_LEVEL = int(B.read_char(paths_of[pick])['level'])
     except Exception:
         B.HERO_LEVEL = 0
+    try:                                       # 1.7.0: ... and hit a share of his damage per second (SoulDamage)
+        import hero_power as HP
+        if base_arz:
+            HP.use_db(base_arz)
+        B.HERO_DPS = float(HP.strength(paths_of[pick]) or 0)
+    except Exception as e:                     # a build the calculator does not know: the souls keep the boss's damage
+        log('  (damage of %s not measured: %s / урон не посчитан)' % (pick, e))
+        B.HERO_DPS = 0.0
     if mode == 'power':
         B.HERO_LIFE = life(pick)
         B.HERO_BOSS = max(0.1, num('autolifeboss', 1))

@@ -16,11 +16,14 @@ on Legendary). The pet gets the game's pet difficulty pak instead of the boss pa
 (tq_together.choose_hero), on every difficulty. From the boss's own Legendary level to the hero's, its mana and
 attributes move along the game's own monster growth curve (research\\souls\\level_curve.py: 2129 vanilla level
 variants - +2.4 %/level at Normal levels 20-40, +2.0 % at 40-60) and its skill levels by 0.165 per level (same
-survey), capped by each skill's max level. Life is ONE value like a vanilla pet's: LIFE_ANCHOR (7500 for the median
+survey), capped by each skill's max level. Life is ONE value like a vanilla pet's: LIFE_ANCHOR (15000 for the median
 boss at hero level 85) x how tough this boss is among bosses, held in a corridor (bosses x0.7..x1.5, heroes x0.4..x1:
 Nessus' 1282 base life is not paper, Akhenaten's 105000 not immortal) x the same growth curve for the hero's level,
-x SoulLife %. On Legendary the pet pak makes the median ~24k (1.6.5; 16.6k before); the game's strongest permanent
-pets have 1.9-2.7k base (~8k).
+x SoulLife %. On Legendary the pet pak makes the median ~47k (1.7.1; 24k in 1.6.5, 16.6k before); the game's
+strongest permanent pets have 1.9-2.7k base (~8k).
+1.7.0: damage and run speed follow the hero (SoulDamage % of his character-window DPS, his own ground speed; giants
+no faster than themselves in the game) - see DAMAGE_FIELDS and SPEEDUP_MAX below. 1.7.3: no animation of a soul
+plays more than SoulSpeedMax (2) times faster than the boss's own, so auras on top do not turn it into mush.
 
 Where souls drop (every vanilla item keeps its exact odds):
   - from the monster itself, a Misc loot slot: the eidolon shard's slot of 1.5.1 if there is one (shared, both odds
@@ -49,15 +52,18 @@ SUB = 'souls' + BS
 # 3 shards is ~20 boss fights, 12 % for a hero's 2 shards ~17
 DEFAULTS = (('souls', 1), ('soulheroes', 1), ('soulbossshards', 3), ('soulheroshards', 2), ('soulbosschance', 15.0),
             ('soulherochance', 12.0), ('soulorbchance', 10.0), ('soulchestchance', 15.0), ('soullife', 100.0),
-            ('soulmaxscale', 1.3), ('soultestshop', ''))
+            ('soulmaxscale', 1.3), ('souldamage', 30.0), ('soulspeedmax', 2.0), ('soultestshop', ''))
 LIMITS = {'soulbossshards': (2, 5), 'soulheroshards': (2, 5), 'soulbosschance': (0, 95), 'soulherochance': (0, 95),
-          'soulorbchance': (0, 50), 'soulchestchance': (0, 95), 'soullife': (10, 1000), 'soulmaxscale': (0.5, 3)}
+          'soulorbchance': (0, 50), 'soulchestchance': (0, 95), 'soullife': (10, 1000), 'soulmaxscale': (0.5, 3),
+          'souldamage': (0, 500), 'soulspeedmax': (1.0, 3.0)}
 
 
 def settings():
     """TQTogether.ini: Souls=1, SoulHeroes=1, SoulBossShards=3, SoulHeroShards=2, SoulBossChance=15,
     SoulHeroChance=12, SoulOrbChance=10, SoulChestChance=15, SoulLife=100 (%), SoulMaxScale=1.3,
-    SoulTestShop=arachne,nessus (shards sold by the ring merchants - for testing)"""
+    SoulDamage=30 (% of the hero's damage per second the median boss soul deals with its basic attack; 0 = the boss's
+    own damage only), SoulSpeedMax=2 (no animation of a soul faster than this many times the boss's own; 1 = the
+    boss's own speeds), SoulTestShop=arachne,nessus (shards sold by the ring merchants - for testing)"""
     st = paths.settings()
     out = {}
     for k, d in DEFAULTS:
@@ -93,21 +99,68 @@ CORRIDOR = {'boss': (0.7, 1.5), 'hero': (0.4, 1.0)}    # life vs the median boss
 # bosses' own life and gave 7-34k base (x3 with the pak) - Cerberus at 107k.
 # 1.6.5, owner after playing Tartarus and Typhon: "a bit tougher, so it shows they are bosses" - 5000 -> 7500
 # (~24k on Legendary; a soul also counts as one more player for the party difficulty)
-LIFE_ANCHOR, ANCHOR_LEVEL = 7500.0, 85
+# 1.7.1, owner after Cerberus against Typhon with the 1.7.0 damage (x63): "the damage too strong, the life weak" -
+# SoulDamage 50 -> 30 and the anchor 7500 -> 15000 (~47k on Legendary; Cerberus ~70k)
+LIFE_ANCHOR, ANCHOR_LEVEL = 15000.0, 85
 
 
-def anim_fixes(rec):
-    """-> [(speed field, old, new, what)]: the animation speeds that bring this creature to RUN_LINE on the ground and
-    within ATTACK_LINE / SPECIAL_LINE per attack / skill; empty for a creature already that quick. An animation missing
-    from soul_anims.ANIMS is left as it is. The walk of a set is sped up with its run (Tartarus walks to run)."""
-    from soul_anims import ANIMS
+def anim_view(rec, table=None):
+    """{lowercase field: (name, values)} of a creature as the game animates it. 1.7.0: a creature with an animation table
+    (charAnimationTableName) plays every animation the table names at the table's speed for it; the same fields in
+    its own record are then dead leftovers (Hades' record names a satyr's clips, the table his own)"""
     F = {vn.lower(): (vn, vals) for vn, vt, vals in rec['vars']}
+    if table is None:
+        return F
+    T = {vn.lower(): (vn, vals) for vn, vt, vals in table['vars']}
+    for low, (name, vals) in T.items():
+        m = ANIM_SET.match(name)
+        if not m or not vals or not isinstance(vals[0], str) or not vals[0]:
+            continue
+        F[low] = (name, vals)
+        sp = '%s%sAnimSpeed%s' % m.groups()
+        F[sp.lower()] = T.get(sp.lower(), (sp, [1.0]))
+    return F
+
+
+def anim_table(R, rec):
+    """the animation table record a creature names, or None (R: a record store with get / peek)"""
+    t = get1(rec, 'charAnimationTableName', '') or ''
+    k = key_of(t) if t else ''
+    if not k or k not in R:
+        return None
+    return R.peek(k) if hasattr(R, 'peek') else R.get(k)
+
+
+def anim_fixes(rec, src=None, line=None, table=None, src_table=None, giant=False, speedup=None, atk_factor=1.0,
+               cast_factor=1.0):
+    """src: the boss record the soul is made from; line: the run line in m/s (the hero's speed); table / src_table:
+    their animation tables, if they have one; giant: a boss that paths as Large - its line is its own speed in the game
+    (src), at least RUN_LINE, not the hero's; speedup: SoulSpeedMax - no animation of the soul (run, attack, spell,
+    skill) plays more than this many times faster than the boss's own (anim speed x stat, src); atk_factor /
+    cast_factor (1.7.5): the hero's attack / cast speed bonus - every strike (spell, skill) is aimed at the boss's own
+    time, at most the line, divided by it (measured from the boss's own time, so a second pass asks for nothing more).
+    -> [(field, old, new, what, in_table)]: what brings this creature to the run line on the ground and within
+    ATTACK_LINE / SPECIAL_LINE per attack / skill, as far as `speedup` lets; empty for a creature already that quick
+    (or at the caps). in_table: the field belongs in the animation table, not the record. An animation missing from
+    soul_anims.ANIMS is left as it is. The walk of a set is sped up with its run (Tartarus walks to run).
+    1.6.7: an animation field goes at most to ANIM_CAP (the vanilla maximum); what is still missing goes onto the
+    creature's own stat (characterRunSpeed / AttackSpeed / SpellCastSpeed, `new` is then the per-difficulty list), up to
+    STAT_CAP - and (1.7.3) only as far as no animation of that kind passes `speedup` x its own in the game."""
+    from soul_anims import ANIMS
+    line = RUN_LINE if line is None else line
+    speedup = SPEEDUP_MAX if speedup is None else speedup
+    F = anim_view(rec, table)
+    in_tab = {vn.lower() for vn, vt, vals in table['vars'] if ANIM_SET.match(vn) and vals and isinstance(vals[0], str)
+              and vals[0]} if table is not None else set()        # the animations the table gives
     val = lambda k, d: (F[k][1] if k in F and F[k][1] else d)
+    S = {k: v for k, (n, v) in anim_view(src, src_table).items()} if src is not None else None
+    sval = lambda k, d: (S[k] if S and S.get(k) else d)
     scale = float(val('scale', [1.0])[0] or 1.0)
-    run_stat = float(val('characterrunspeed', [1.0])[-1] or 1.0)
-    atk_stat = float(val('characterattackspeed', [1.0])[-1] or 1.0)
-    cast_stat = float(val('characterspellcastspeed', [1.0])[-1] or 1.0)   # spells and skill animations (1.6.4)
-    out = []
+    stat_of = {'Run': 'characterRunSpeed', 'Attack': 'characterAttackSpeed', 'SpellAttack': 'characterSpellCastSpeed',
+               'Special': 'characterSpellCastSpeed'}          # spells and skill animations: the cast speed (1.6.4)
+    stat = {kd: float(val(f.lower(), [1.0])[-1] or 1.0) for kd, f in stat_of.items()}
+    own_stat = {kd: float(sval(f.lower(), [1.0])[-1] or 1.0) for kd, f in stat_of.items()}
+    anims = []                                       # (kind, prefix, num, spname, sp, own playback, k wanted, what(k))
     for low, (name, vals) in sorted(F.items()):
         m = ANIM_SET.match(name)
         if not m or not vals or not isinstance(vals[0], str) or not vals[0]:
@@ -116,33 +169,166 @@ def anim_fixes(rec):
         if not info:
             continue
         pre, kind, num = m.groups()
+        if kind == 'Walk':
+            continue
         spname = '%s%sAnimSpeed%s' % (pre, kind, num)
         sp = float(val(spname.lower(), [1.0])[0] or 1.0)
-        k, what = 1.0, ''
+        own = float(sval(spname.lower(), [1.0])[0] or 1.0) * own_stat[kind] if S is not None else None
+        room = speedup * own / max(sp * stat[kind], 1e-6) if own else float('inf')   # how much faster it may still go
+        k, what = 1.0, None
         if kind == 'Run' and info[0] > 0:
-            v = info[0] * scale * sp * run_stat
-            if v < RUN_LINE - 1e-3:
-                k, what = RUN_LINE / v, 'run %.1f -> %.1f m/s' % (v, RUN_LINE)
-        elif kind == 'Attack' and info[1] > 0:
-            t = info[1] / (sp * atk_stat)
-            if t > ATTACK_LINE + 1e-3:
-                k, what = t / ATTACK_LINE, 'attack %.1f -> %.1f s' % (t, ATTACK_LINE)
-        elif kind == 'SpellAttack' and info[1] > 0:
-            t = info[1] / (sp * cast_stat)
-            if t > ATTACK_LINE + 1e-3:
-                k, what = t / ATTACK_LINE, 'spell %.1f -> %.1f s' % (t, ATTACK_LINE)
-        elif kind == 'Special' and info[1] > 0:
-            t = info[1] / (sp * cast_stat)
-            if t > SPECIAL_LINE + 1e-3:
-                k, what = t / SPECIAL_LINE, 'skill %.1f -> %.1f s' % (t, SPECIAL_LINE)
-        if k > 1.0 + 1e-6:
-            out.append((spname, sp, sp * k, what))
+            v = info[0] * scale * sp * stat['Run']
+            ln = line
+            if giant and own:       # 1.7.1: not faster than itself in the game (its own size), at least RUN_LINE
+                ln = min(line, max(RUN_LINE, info[0] * float(sval('scale', [1.0])[0] or 1.0) * own))
+            if v < ln - 1e-3:
+                k = min(ln / v, room)
+                what = lambda kk, v=v: 'run %.1f -> %.1f m/s' % (v, v * kk)
+        elif kind in ('Attack', 'SpellAttack', 'Special') and info[1] > 0:
+            t = info[1] / (sp * stat[kind])
+            lim = SPECIAL_LINE if kind == 'Special' else ATTACK_LINE
+            t_own = info[1] / own if own else t
+            target = min(t_own, lim) / (atk_factor if kind == 'Attack' else cast_factor)
+            if t > target + 1e-3:
+                k = min(t / target, room)
+                label = {'Attack': 'attack', 'SpellAttack': 'spell', 'Special': 'skill'}[kind]
+                what = lambda kk, t=t, label=label: '%s %.1f -> %.1f s' % (label, t, t / kk)
+        anims.append((kind, pre, num, spname, sp, own, k, what))
+    out, rest, new_sp = [], {}, {}
+    for kind, pre, num, spname, sp, own, k, what in anims:
+        new_sp[spname] = sp
+        if what is None or k <= 1.0 + 1e-3:
+            continue
+        cap = ANIM_CAP[kind]
+        ka = min(k, max(1.0, cap / sp))             # the animation, up to the vanilla maximum
+        if ka > 1.0 + 1e-6:
+            new_sp[spname] = sp * ka
+            out.append((spname, sp, sp * ka, what(k), (pre + kind + 'anim' + num).lower() in in_tab))
             if kind == 'Run':
                 wname = '%sWalkAnimSpeed' % pre
                 if (pre + 'walkanim').lower() in F:
                     wsp = float(val(wname.lower(), [1.0])[0] or 1.0)
-                    out.append((wname, wsp, wsp * k, what))
+                    out.append((wname, wsp, min(max(wsp, cap), wsp * ka), what(k), (pre + 'walkanim').lower() in in_tab))
+        if k / ka > 1.0 + 1e-3:
+            rest[stat_of[kind]] = max(rest.get(stat_of[kind], 1.0), k / ka)
+    for st_name, kr in sorted(rest.items()):
+        # the stat moves every animation of its kind: none of them past `speedup` x its own in the game
+        kinds = [kd for kd, f in stat_of.items() if f == st_name]
+        lim = min([speedup * own / max(new_sp[spname] * stat[kind], 1e-6)
+                   for kind, pre, num, spname, sp, own, k, what in anims if kind in kinds and own] or [kr])
+        kr = min(kr, max(1.0, lim))
+        cur = [float(x or 0) for x in (val(st_name.lower(), [1.0]))]
+        new = [min(STAT_CAP[st_name], x * kr) for x in cur]
+        if max(n - c for n, c in zip(new, cur)) > 1e-3:
+            out.append((st_name, cur, new, '%s x%.2f (animation at its cap)' % (
+                st_name, max(n / c for n, c in zip(new, cur))), False))
     return out
+
+
+def speedups(pet, src, table=None, src_table=None):
+    """[(how many times faster the soul plays it than the boss, animation)] for every run, attack, spell and skill
+    animation both name (anim speed x its stat)"""
+    stat_of = {'Run': 'characterrunspeed', 'Attack': 'characterattackspeed', 'SpellAttack': 'characterspellcastspeed',
+               'Special': 'characterspellcastspeed'}
+    P, S_ = anim_view(pet, table), anim_view(src, src_table)
+    one = lambda V, k: float(((V.get(k) or (None, [1.0]))[1] or [1.0])[-1] or 1.0)
+    out = []
+    for low, (name, vals) in P.items():
+        m = ANIM_SET.match(name)
+        if not m or m.group(2) == 'Walk' or not vals or not isinstance(vals[0], str) or not vals[0] or low not in S_:
+            continue
+        sp = ('%s%sAnimSpeed%s' % m.groups()).lower()
+        mine = one(P, sp) * one(P, stat_of[m.group(2)])
+        own = one(S_, sp) * one(S_, stat_of[m.group(2)])
+        if own > 0:
+            out.append((mine / own, name))
+    return out
+
+
+def ai_fixes(R, pet):
+    """1.7.7: special-attack slots of a soul that shake the air -> [('range', slot, old class, new class, skill, reach)]
+    for a wave / a blast around the caster whose range class reaches past it, then [('drop', slot, kept slot, skill,
+    delay, kept delay)] for a skill wired twice for overlapping distances (the longest delay stays)"""
+    g = lambda f, d=None: get1(pet, f, d)
+    med, lng = float(g('mediumRangeMin', 4) or 4), float(g('longRangeMin', 8) or 8)
+    ctl = R.get(key_of(g('controller', '') or ''))
+    view = float(get1(ctl, 'ViewDistance', 24) or 24) if ctl is not None else 24.0
+    far = {'ShortRange': med, 'MediumRange': lng, 'LongRange': view, 'AnyRange': view}
+    out, slots = [], []
+    for sl in SLOTS:
+        sk = g(sl + 'SkillName', '')
+        if not sk:
+            continue
+        rng = g(sl + 'Range', 'AnyRange') or 'AnyRange'
+        s = R.get(key_of(sk))
+        cls = (get1(s, 'Class', '') or '') if s is not None else ''
+        reach = None
+        if cls in REACH_WAVE:
+            reach = float(get1(s, 'waveDistance', 0) or 0) or None
+        elif cls in REACH_AROUND:
+            reach = float(max(float(x or 0) for x in (getv(s, 'skillTargetRadius') or [0]))) or None
+        if reach and rng != 'ShortRange' and far.get(rng, view) > reach * REACH_SLACK + 0.5:
+            new = 'MediumRange' if reach * REACH_SLACK + 0.5 >= lng else 'ShortRange'
+            if new != rng:
+                out.append(('range', sl, rng, new, sk, reach))
+                rng = new
+        slots.append((sl, key_of(sk), sk, rng, float(g(sl + 'Delay', 0) or 0)))
+    by = collections.defaultdict(list)
+    for sl, k, sk, rng, dl in slots:
+        by[k].append((sl, sk, rng, dl))
+    for k, lst in by.items():
+        kept = []
+        for sl, sk, rng, dl in sorted(lst, key=lambda x: (-x[3], SLOTS.index(x[0]))):
+            hit = next((x for x in kept if x[2] == rng or 'AnyRange' in (x[2], rng)), None)
+            if hit:
+                out.append(('drop', sl, hit[0], sk, dl, hit[3]))
+            else:
+                kept.append((sl, sk, rng, dl))
+    return out
+
+
+def walks(view):
+    """False if none of the creature's known run animations moves it (Tiamat: her 'run' is an idle) - it only
+    teleports; None if no run animation is known"""
+    from soul_anims import ANIMS
+    runs = [ANIMS.get(vals[0].lower().replace('/', BS)) for low, (name, vals) in view.items()
+            if re.search(r'RunAnim$', name) and vals and isinstance(vals[0], str) and vals[0]]
+    runs = [r for r in runs if r]
+    if not runs:
+        return None
+    return max(r[0] for r in runs) > 0.05
+
+
+def basic_dps(pet, table, pak, eq):
+    """1.7.0: damage per second of a soul's basic attack, for SoulDamage: its hand hit with the pet pak's Legendary
+    physical bonus and its strength (combatequations physicalDamageEquation), over its attack time (its attack
+    animations at its attack speed with the pak's). 0 for a creature that fights with a weapon only (no hand hit).
+    Only the median of the bosses is used: every soul gets the same factor and keeps its strength among the others."""
+    from soul_anims import ANIMS
+    F = anim_view(pet, table)
+    g = lambda k, d=0.0: float(((F.get(k.lower()) or (None, [d]))[1] or [d])[-1] or d)
+    hit = (g('handHitDamageMin') + g('handHitDamageMax')) / 2.0
+    if hit <= 0:
+        return 0.0
+    hit *= 1 + pak.get('offensivePhysicalModifier', 0.0) / 100.0
+    env = {'physicalDamageDV': hit, 'strengthDV': g('characterStrength'), 'dexterityDV': g('characterDexterity'),
+           'intelligenceDV': g('characterIntelligence'), 'characterLevelDV': g('charLevel', 1.0)}
+    try:
+        hit = float(eval(eq.replace('^', '**'), {'__builtins__': {}}, env))
+    except Exception:
+        pass
+    speed = g('characterAttackSpeed', 1.0) * (1 + pak.get('characterAttackSpeedModifier', 0.0) / 100.0)
+    times = []
+    for low, (name, vals) in F.items():
+        m = ANIM_SET.match(name)
+        if m and m.group(2) == 'Attack' and vals and isinstance(vals[0], str) and vals[0]:
+            info = ANIMS.get(vals[0].lower().replace('/', BS))
+            if info and info[1] > 0:
+                sp = float(((F.get(('%sAttackAnimSpeed%s' % (m.group(1), m.group(3))).lower()) or (None, [1.0]))[1]
+                            or [1.0])[0] or 1.0)
+                times.append(info[1] / max(sp * speed, 1e-3))
+    t = median(times) if times else 1.2
+    return hit / max(t, 0.2)
 
 
 def median(xs):
@@ -170,6 +356,9 @@ def grow(curve, frm, to):
 # --- which records, grouped how
 CLASSES = ('Monster', 'Hades', 'SpiritHost', 'Cerberus', 'Typhon2', 'Megalesios', 'Ormenos')
 SPECIAL_CLASS = set(CLASSES) - {'Monster'}
+# summoned and fought with by the owner 17.10 (TQVault test vault): they come, follow, fight and die as pets
+SPECIAL_TESTED = {'hades ~ god of the dead', 'cerberus ~ warden of hades', 'chaos ~ cerberus', 'megalesios ~ telkine',
+                  'ormenos ~ telkine', "pharaoh's honor guard"}
 SKIP_KEY = re.compile(r'sandbox|\\old\\|\\zzz\\|_old\.dbr$|test|credits|death_anim')   # zzz: unused Erik
 MERGE_EN = {'surtr ~ fire incarnate': 'surtr ~ lord of muspelheim'}     # one soul for both stages
 AI_NAMES = ('attackSkillName', 'specialAttackSkillName', 'specialAttack2SkillName', 'specialAttack3SkillName',
@@ -217,7 +406,10 @@ LOOK = {'boss': ('XPack\\Items\\Charms\\X_AnimalPart05A_L.tex', 'XPack\\Items\\C
 CALL_ICON = ('InGameUI\\Icons\\Skills\\Spirit\\SpectralHero01Up.tex', 'InGameUI\\Icons\\Skills\\Spirit\\SpectralHeroDown01.tex')
 # 1.6.2: treasureProxyName (80 bosses: the reward chest put down where the boss dies - the Tartarus soul left its orb,
 # owner 16.10) and actorToSpawnOnDeath2 (14) go too
-DROP_FIELDS = ('actorToSpawnOnDeath', 'actorToSpawnOnDeath2', 'treasureProxyName', 'dyingSkillName', 'MonsterMusic',
+# 1.6.8: perPartyMemberDropItemName (30 bosses/heroes: a quest item handed to every party member on death, whatever
+# dropItems says - the Ancient One's soul dropped his Magic Compass)
+DROP_FIELDS = ('actorToSpawnOnDeath', 'actorToSpawnOnDeath2', 'treasureProxyName', 'perPartyMemberDropItemName',
+               'dyingSkillName', 'MonsterMusic',
                'MonsterMusicRadius', 'goldGenerator', 'LowerHealthDisplayPercentage', 'UpperHealthDisplayPercentage',
                'distressCallGroup', 'IsGenerated', 'chainInitialSkill', 'chainNextSkill', 'chainBehavior')
 # 1.6.3 speed from the ANIMATIONS (owner 16.10: the Tartarus soul lagged behind and swung slowly; the 1.6.2 floors on the
@@ -228,16 +420,94 @@ DROP_FIELDS = ('actorToSpawnOnDeath', 'actorToSpawnOnDeath2', 'treasureProxyName
 # Each animation set of a soul that is slower is played faster to the line, nothing else changes. Arachne (owner:
 # "normal") is the yardstick and stays as she is.
 # soul_anims.ANIMS: root speed and length of every animation the souls use, read from the game's archives read-only.
-RUN_LINE = 7.0             # m/s on the ground at characterRunSpeed (about 0.85 of a hero without run bonuses)
+RUN_LINE = 7.0             # m/s on the ground at characterRunSpeed - the floor; 1.7.0: the hero's own speed above it
+HERO_RUN = 8.31            # m/s a hero's body runs without bonuses (MalePC_Run / FemalePC_Run 6.25 m/s x run speed 1.33)
 ATTACK_LINE = 1.6          # s per basic attack: Arachne's slowest is 1.5 (median soul 1.2, Tartarus 2.4)
 # 1.6.4 (owner: "the spells stayed as slow"): spells and skill animations play at characterSpellCastSpeed - Tartarus 1.0,
 # Arachne 1.3 - and Tartarus casts most often the ones under the old line (lightning cone with the spell animation,
 # fire spikes, fire walk). Cast speed at least Arachne's; skills at it within 2.0 s (Arachne's slowest: 2.5 / 1.3 = 1.9)
 CAST_LINE = 1.3
 SPECIAL_LINE = 2.0         # s per skill animation at the cast speed (Tartarus' meteor 4.3 s)
+# 1.6.7 caps from vanilla monsters and pets (research\souls\probe_speed_ranges.py): animation speeds go up to 2.5 for
+# runs and 2.0 for attacks and spells; characterRunSpeed p99 2.2, attack and cast speed p99 2.0
+ANIM_CAP = {'Run': 2.5, 'Attack': 2.0, 'SpellAttack': 2.0, 'Special': 2.5}
+STAT_CAP = {'characterRunSpeed': 2.5, 'characterAttackSpeed': 2.0, 'characterSpellCastSpeed': 2.0}
+# 1.6.9 (owner: the Ancient One "a giant machine running like a cockroach"): the run was sped up at most x2.6 the
+# soul's own - Tartarus got x2.57 (right). A giant stays a giant; the rest of the way it teleports.
+# 1.7.3 (owner 17.10: Eylin's Heart of Oak, +10 % speed to every ally, turned Talos' animations "almost into mush"):
+# only the RUN had that cap - his spells played x2.9 faster than his own, his attacks x2.0; Porcus' skill x4.5, the Ten
+# Suns' x4, the Dragon Liche's x3.7. Now no animation of a soul (run, attack, spell, skill) plays more than SoulSpeedMax
+# (2.0) times faster than the boss's own: with +30 % from auras and buffs on top still within Tartarus' x2.6
+SPEEDUP_MAX = 2.0
+# 1.7.0 (owner 17.10: Hades and Megalesios slow, the Ancient One "a bit faster than it should"). 106 souls take their
+# animations from a charAnimationTableName table (anim_view): their speed had been measured on dead clips of their own
+# records and their fixes written there - only characterRunSpeed acted. The Ancient One really runs lobstermonster_run
+# (15.2 m/s at speed 1: 7.6 m strides): x18.6 on a dead field changed nothing (1.6.6), its stat x7.4 / x4.1 / x2.1 made
+# it "crazy fast" / "a cockroach" / "a bit fast" (1.6.7-1.6.9). The 1.6.8 cap on anim x stat (3.1) came from that
+# misreading and is gone: it held Megalesios (x3.0 by design) at 3.7 m/s and Hades (x2.2) at 4.0. The table is now
+# copied per soul (<sid>_soulanm.dbr) and sped up there. The run line follows the hero (owner: "if the player moves
+# fast, the boss keeps up"): his own ground speed, HERO_RUN x (1 + his run bonus from gear and passives within the
+# game's cap), less the +26 % the game gives every pet on Legendary - at least RUN_LINE
+# Skills a boss casts on its arena only (owner 17.10: Cerberus' poison from the floor cracks of his arena): they fire
+# the level's geysers / turrets (numGeysersToFire -1 = all of them; "activates lake turrets", targetPlayer) - elsewhere
+# nothing happens; Typhon's skill transfer pulls powers from his arena statues. 1.7.2 (owner 17.10): Ormenos' telekinesis
+# throws the stalactites of his obsidian cave - away from it the stalactites he drops fall (and hit) but none is
+# thrown, and the AI chose the throw 45 % of the time; the drop stays
+ARENA_SKILL_CLASS = {'Skill_CerberusGeysers', 'Skill_CharonGeysers', 'Skill_TurretFireControl', 'Skill_TyphonSkillTransfer',
+                     'Skill_AttackTelekinesis'}
+# souls that cannot walk (Tiamat, Apophis: the run is an idle; owner 17.10: Tiamat casts once and then stands while she
+# is hit, Apophis neither attacks nor follows): their basic attack had an 8 s cooldown and the rest strike at arm's
+# length, so between waves the AI walked towards the enemy - on the spot. A ranged basic attack of their own body
+# (the animation reference decides) and a short leash: they teleport to the hero at STATIC_TELEPORT m
+STATIC_ATTACK = (('spitpoison', 'records\\xpack3\\skills\\boss skills\\tiamat_spitpoison.dbr'),)
+STATIC_TELEPORT = 14.0
+# 1.7.7 (owner 18.10): "Talos uses his flamethrower too often, and from where it does not reach - he shakes the air;
+# the boss itself does the same". The AI fires a special when the target is in the slot's range class (ShortRange <
+# mediumRangeMin <= MediumRange < longRangeMin <= LongRange, AnyRange: all, up to the controller's ViewDistance). A
+# wave (flame breath) or a blast around the caster does not move it, so a class reaching past the skill shakes the
+# air: Talos' flamethrower (20 m) sat in LongRange (15-24 m) with a 1 s delay AND in MediumRange with 5 s. Such a slot
+# is narrowed to what the skill reaches, and a skill then wired twice for the same distances keeps one slot - the
+# longest delay. Melee strikes and charges walk to the target themselves; projectiles fly - they stay as they are
+SLOTS = ['specialAttack'] + ['specialAttack%d' % n for n in range(2, 6)]
+REACH_WAVE = ('Skill_AttackWave',)
+REACH_AROUND = ('Skill_AttackRadius',)          # a blast around the caster (Talos' stomp, Thunder Clap)
+REACH_SLACK = 1.1      # a class may reach 10 % past the skill: the Chimera's 17 m breath keeps MediumRange (5-18 m)
+# 1.7.0 damage (owner 17.10: with two eidolons and a soul - monsters as for 4 players - "the bosses hit some bug and
+# cannot do a thing"; a soul's hand hit is 1-3 % of a geared hero's damage per second): SoulDamage % of the hero's
+# character-window DPS is what the MEDIAN boss soul's basic attack deals (basic_dps); every soul gets that one factor
+# (never below 1) as a passive (souls\soul_power.dbr: every damage modifier the boss passive GlobalProperties_*_Boss
+# has, plus physical), so their skills scale as well and each keeps its rank among the bosses. Per difficulty level it
+# multiplies the pet pak's own bonus too: +x % = (factor - 1) x (100 + pak %)
+PET_PAK = 'records\\game\\petgamebalanceattributes.dbr'
+COMBAT_EQ = 'records\\game\\combatequations.dbr'
+DAMAGE_FIELDS = ('offensivePhysicalModifier', 'offensivePierceModifier', 'offensiveColdModifier', 'offensiveFireModifier',
+                 'offensiveLightningModifier', 'offensivePoisonModifier', 'offensiveLifeModifier',
+                 'offensiveSlowPhysicalModifier', 'offensiveSlowBleedingModifier', 'offensiveSlowColdModifier',
+                 'offensiveSlowFireModifier', 'offensiveSlowLightningModifier', 'offensiveSlowPoisonModifier',
+                 'offensiveSlowLifeModifier')
+DAMAGE_MAX = 200.0
+# 1.7.4 (owner 18.10, playing Difficulty=power: monster life x19, damage x3.25): "Talos gives in to the sirens' slows",
+# "Cerberus falls off fast", "I kill Typhon for ages and my Typhon soul falls apart from the other mobs".
+# - boss_conversionimmunity is the boss's OWN defence (69 of 78 bosses: immune to stun, freeze, sleep, fear, confusion,
+#   conversion, slow; 65-85 % against percent-of-life damage; dodge, life +50 %), removed since 1.6.0 along with the
+#   boss damage passives - the sirens' song (sleep / conversion / confusion) and dissonance (slow 50 %, stun) took
+#   Talos. It stays now; only the boss DAMAGE passives (GlobalProperties_*_Boss) go, damage comes from the hero.
+# - the hero difficulty (Difficulty=power) multiplies the monsters' Legendary damage modifiers and offensive ability by
+#   HERO_DAMAGE (x3.25 for Nikton's party): the souls were built for vanilla Legendary - their life and defence get
+#   the same factor on Legendary (souls\soul_guard.dbr), so a monster's blow lands on a soul as in vanilla Legendary
+# a dead soul's body: the eidolons' dissolve (doppelganger record: 2 s, cloud texture, grey) where the boss has none
+DISSOLVE_NONE = ('', 'None', 'DissolveOnCallback')
+DISSOLVE = (2.0, 'Effects\\Textures\\CloudTEST03.tex', 150)
 ANIM_SET = re.compile(r'^(\w+?)(Run|Walk|Attack|SpellAttack|Special)Anim(\d*)$')
-BOSS_ONLY_SKILL = re.compile(r'globalproperties_\w*boss|globalproperties_\w*graeae|boss_conversionimmunity')
+BOSS_ONLY_SKILL = re.compile(r'globalproperties_\w*boss|globalproperties_\w*graeae')
 MISC_W = 100000                # weights of a slot we write: probabilities x MISC_W / chance
+
+
+def literal(tag):
+    """the name the game shows for a 'tag' that is no tag: the developers' own heroes (zz_dev, a hidden dungeon) carry
+    their names as plain text - '~ Toxeanubis the Slayer  ~', 'Anthony The Drunken Warrior' (1.6.6 named the soul
+    'toxeanubistheslayer')"""
+    return re.sub(r'\s+', ' ', (tag or '').replace('~', ' ')).strip()
 
 
 def fields(r):
@@ -273,7 +543,19 @@ class Souls(object):
         self.ns = b_ns() + SUB
         self.peek = getattr(b.R, 'peek', None) or b.R.__getitem__   # read-only: no cache
         self._memo = {}
-        self.ledger = {'souls': {}, 'misc': {}, 'chests': {}, 'orbs': {}, 'settings': dict(self.st), 'hero_level': self.H}
+        # 1.7.0: the run line is the hero's own ground speed (his run bonus from gear + passives within the game's cap,
+        # Builder.bake_gear) less the run bonus the game gives every pet on Legendary - the soul runs with him
+        self.run_bonus = float((getattr(b, 'hero_run', {}) or {}).get(hero, 0.0) or 0.0)
+        pet_run = self.pak()[2].get('characterRunSpeedModifier', 0.0)
+        self.run_line = round(max(RUN_LINE, HERO_RUN * (1 + max(0.0, self.run_bonus) / 100.0) / (1 + pet_run / 100.0)), 3)
+        # 1.7.5: and strikes and casts with him - his attack / cast speed bonus (gear + passives within the caps) speeds
+        # every strike / spell / skill of the soul up by as much, within SoulSpeedMax of the boss's own
+        hs = (getattr(b, 'hero_speed', {}) or {}).get(hero, {}) or {}
+        self.atk_factor = round(1 + max(0.0, float(hs.get('Attack', 0.0) or 0.0)) / 100.0, 3)
+        self.cast_factor = round(1 + max(0.0, float(hs.get('SpellCast', 0.0) or 0.0)) / 100.0, 3)
+        self.ledger = {'souls': {}, 'misc': {}, 'chests': {}, 'orbs': {}, 'settings': dict(self.st), 'hero_level': self.H,
+                       'run_line': self.run_line, 'run_bonus': self.run_bonus, 'atk_factor': self.atk_factor,
+                       'cast_factor': self.cast_factor}
         self.orb_entries = {}          # region -> (table record, % per orb), placed by Builder.eidolon_drops
         self.report = []
 
@@ -303,7 +585,7 @@ class Souls(object):
             tag = tag.strip()
             if not tag:
                 continue
-            en = self.text(tag, 'en').lower()
+            en = (self.text(tag, 'en') or literal(tag)).lower()
             tag_en[tag.lower()] = en
             fams.setdefault(tag.lower(), {'tag': tag, 'keys': [], 'mc': set()})
             fams[tag.lower()]['keys'].append(k)
@@ -522,6 +804,9 @@ class Souls(object):
         for f in live:
             f['name'] = {lg: self.full(f, lg) for lg in ('ru', 'en')}
             self.make(f)
+        self.power(live)
+        self.guard(live)
+        self.pace(live)
         n = collections.Counter(f['kind'] for f in live)
         log('  souls: %d bosses, %d hero monsters (hero level %s), %d not built%s' % (
             n['boss'], n['hero'], self.H or 'unknown - their own', len(self.report) - len(live),
@@ -539,7 +824,7 @@ class Souls(object):
                                             'pct': self.st['soulorbchance']}
 
     def full(self, f, lg):
-        t = self.text(f['tag'], lg) or self.text(f['tag'], 'en') or f['sid']
+        t = self.text(f['tag'], lg) or self.text(f['tag'], 'en') or literal(f['tag']) or f['sid']
         return re.sub(r'\s*~\s*', ', ', t.strip(' ~'))
 
     def table(self, name, relics, what):
@@ -581,13 +866,27 @@ class Souls(object):
         notes = []
         cls = one('Class')
         if cls in SPECIAL_CLASS:
-            notes.append('engine class %s -> Pet: NOT TESTED in game' % cls)
+            notes.append('engine class %s -> Pet%s' % (cls, '' if f['en'] in SPECIAL_TESTED else ': NOT TESTED in game'))
         setv(pet, 'templateName', 'database' + BS + 'Templates' + BS + 'Pet.tpl')
         setv(pet, 'Class', 'Pet')
         gone = {x.lower() for x in DROP_FIELDS}
         pet['vars'] = [t for t in pet['vars'] if t[0].lower() not in gone and
                        not re.match(r'^(chanceToEquip|loot)(Misc\d|Finger\d)', t[0])]
         setv(pet, 'dropItems', 0, 3)
+        # 1.7.6 (owner 18.10): an eidolon's body dissolves when it dies or is dismissed; a soul whose boss just falls
+        # (Arachne, Nessus, Talos: no deleteBehavior - the body stays like a slain monster's) or dissolves only on its
+        # fight script's cue (DissolveOnCallback - never given to a pet) dissolves like an eidolon. Its own effect stays
+        db = (one('deleteBehavior') or '').strip()
+        if db in DISSOLVE_NONE:
+            setv(pet, 'deleteBehavior', 'Dissolve', 2)
+            if not one('dissolveTime', 0):
+                setv(pet, 'dissolveTime', DISSOLVE[0], 1)
+            if not one('dissolveTexture'):
+                setv(pet, 'dissolveTexture', DISSOLVE[1], 2)
+            if not any(one(c, 0) for c in ('dissolveColorR', 'dissolveColorG', 'dissolveColorB')):
+                for c in ('dissolveColorR', 'dissolveColorG', 'dissolveColorB'):
+                    setv(pet, c, DISSOLVE[2], 0)
+            notes.append('body dissolves on death like an eidolon\'s (was: %s)' % (db or 'left lying'))
         setv(pet, 'monsterClassification', 'Champion')
         if 'quest' in Fs:
             setv(pet, 'quest', 0)
@@ -623,13 +922,30 @@ class Souls(object):
         # 1.6.3: slow giants up to speed by their animations (after the size is final: the root motion scales with it)
         casts = [float(x or 0) for x in (getv(pet, 'characterSpellCastSpeed') or [1.0])]
         if min(casts) < CAST_LINE - 1e-3:
-            setv(pet, 'characterSpellCastSpeed', [max(CAST_LINE, x) for x in casts], 1)
-            notes.append('cast speed %s -> %s' % ([round(x, 2) for x in casts], [max(CAST_LINE, round(x, 2)) for x in casts]))
-        fixes = anim_fixes(pet)
-        for spname, old, new, what in fixes:
-            setv(pet, spname, math.ceil(new * 1000) / 1000.0, 1)    # up: rounding must not undo it
+            new_c = [max(x, min(CAST_LINE, x * st['soulspeedmax'])) for x in casts]      # 1.7.3: within SoulSpeedMax
+            setv(pet, 'characterSpellCastSpeed', new_c, 1)
+            notes.append('cast speed %s -> %s' % ([round(x, 2) for x in casts], [round(x, 2) for x in new_c]))
+        # 1.7.0: a creature animated by a table gets its own copy of it - the fixes go where the game reads them
+        src_tab = anim_table(R, src)
+        anm = None
+        if src_tab is not None:
+            anm = b.clone(src_tab['name'], self.ns + '%s_soulanm.dbr' % sid)
+            setv(anm, 'FileDescription', 'TQ Together soul %s: animations from %s' % (sid, src_tab['name'].split(BS)[-1][:-4]))
+            setv(pet, 'charAnimationTableName', anm['name'])
+            notes.append('animations from its table %s' % src_tab['name'].split(BS)[-1])
+        # 1.7.5: once without the hero's attack / cast pace (what the damage is measured on, basic_dps), once with it
+        f['fixes0'] = anim_fixes(pet, src, self.run_line, anm, src_tab, giant=large, speedup=st['soulspeedmax'])
+        fixes = anim_fixes(pet, src, self.run_line, anm, src_tab, giant=large, speedup=st['soulspeedmax'],
+                           atk_factor=self.atk_factor, cast_factor=self.cast_factor)
+        f['fixes'] = fixes
+        for spname, old, new, what, in_tab in fixes:                  # up: rounding must not undo it
+            if isinstance(new, list):                                 # a stat, per difficulty (1.6.7)
+                setv(pet, spname, [math.ceil(x * 1000) / 1000.0 for x in new], 1)
+            else:
+                setv(anm if in_tab else pet, spname, math.ceil(new * 1000) / 1000.0, 1)
         if fixes:
-            notes.append('faster: ' + '; '.join(sorted({w for _, _, _, w in fixes})))
+            notes.append('faster: ' + '; '.join(sorted({x[3] for x in fixes})))
+        f['anm'] = anm
         # level and stats: the hero's level. Life: the anchor x how tough this boss is among bosses (in the corridor)
         # x the vanilla growth from level 85 to the hero's (Legendary levels, as Normal-difficulty levels - GAP_L).
         # Mana and attributes: the boss's own, grown from its Legendary level to the hero's along the same curve.
@@ -657,6 +973,10 @@ class Souls(object):
             sr = self.rec(k) if k in R else None
             if sr is None or BOSS_ONLY_SKILL.search(k) or k == dying or not (get1(sr, 'Class', '') or ''):
                 out_.update(('skillname%d' % i, 'skilllevel%d' % i))
+                continue
+            if get1(sr, 'Class', '') in ARENA_SKILL_CLASS:               # 1.7.0: works on its arena only
+                out_.update(('skillname%d' % i, 'skilllevel%d' % i))
+                notes.append('arena skill removed: %s (%s)' % (k.split(BS)[-1], get1(sr, 'Class', '')))
                 continue
             kept.add(k)
             lv = [int(x or 0) for x in (Fs.get('skilllevel%d' % i) or [1])]
@@ -696,6 +1016,12 @@ class Souls(object):
                 chosen.append((key_of(nm), nm, max(1, int(lv[-1] or 1)), c, ro))
             wired = b.wire_ai(pet, chosen)
             notes.append('AI wired by skill class: %s' % ', '.join(wired) if wired else 'natural attack only, as in the game')
+        # 1.7.0: a soul that cannot walk fights from where it stands and keeps to the hero by teleport
+        if walks(anim_view(pet, anm)) is False:
+            notes.extend(self.stationary(pet, anm))
+        notes.extend(self.tidy_ai(pet))
+        f['dps'] = self.paced_dps(f, pet, anm, notes)
+        f['pet_key'] = key_of(pet['name'])
         name_ru, name_en = f['name']['ru'], f['name']['en']
         # 1.6.1, owner: an ENSLAVED soul - the relic, the summon and the pet's name
         setv(pet, 'description', b.tag('tagTQSoul_%s_pet' % sid, '%s ~ порабощённая душа' % name_ru,
@@ -755,8 +1081,245 @@ class Souls(object):
                                      'call': key_of(call['name']), 'relic': key_of(relic['name']),
                                      'shard_table': key_of(shard_t['name']), 'shards': shards, 'sources': [],
                                      'orb': f['plan']['orb'], 'life': getv(pet, 'characterLife'),
-                                     'level': target, 'notes': notes}
+                                     'level': target, 'notes': notes, 'giant': large,
+                                     'anm': key_of(anm['name']) if anm is not None else ''}
         self.report.append((f, pet, notes))
+
+    # ------------------------------------------------------------------ 1.7.0: fighting where it stands, damage
+    def paced_dps(self, f, pet, anm, notes):
+        """1.7.5: the soul strikes with the hero's pace (anim_fixes atk_factor / cast_factor); its damage per second
+        stays what it was at its own pace (owner 18.10: the damage is right - only the slow boss "gets little done"
+        next to a fast hero): the hand hit is lightened by as much as the strikes were sped up. -> basic_dps at its own
+        pace (SoulDamage is measured on it); skills keep their damage per cast and only wind up faster"""
+        import copy
+        pak, eq = self.pak()[2], self.phys_eq()
+        dps = basic_dps(pet, anm, pak, eq)
+        if dps <= 0 or (self.atk_factor <= 1.0 + 1e-9 and self.cast_factor <= 1.0 + 1e-9):
+            return dps
+        p0, a0 = copy.deepcopy(pet), copy.deepcopy(anm) if anm is not None else None
+        for fixes, pick in ((f['fixes'], 1), (f['fixes0'], 2)):      # undo the paced fixes, apply the plain ones
+            for spname, old, new, what, in_tab in fixes:
+                v = old if pick == 1 else new
+                up = (lambda x: math.ceil(x * 1000) / 1000.0) if pick == 2 else (lambda x: x)   # as make() rounds
+                if isinstance(v, list):
+                    setv(p0, spname, [up(x) for x in v], 1)
+                else:
+                    setv(a0 if in_tab else p0, spname, up(v), 1)
+        dps0 = basic_dps(p0, a0, pak, eq)
+        if dps0 <= 0 or dps <= dps0 * 1.001:
+            return dps0 or dps
+        hands = [(fld, [float(x or 0) for x in getv(pet, fld) or []]) for fld in ('handHitDamageMin', 'handHitDamageMax')]
+        r = 1.0
+        for _ in range(4):               # damage = (hand x a + b) / time: a few steps to land on dps0
+            r *= dps0 / max(basic_dps(pet, anm, pak, eq), 1e-9)
+            for fld, vals in hands:
+                setv(pet, fld, [round(x * r, 1) for x in vals], 1)
+        notes.append('pace with the hero: strikes x%g, casts x%g (within SoulSpeedMax); hand hit x%.2f - damage per '
+                     'second as at its own pace' % (self.atk_factor, self.cast_factor, r))
+        return dps0
+
+    def tidy_ai(self, pet):
+        """1.7.7: no special fired at distances it does not reach, none wired twice for the same distances -> notes"""
+        notes = []
+        for fx in ai_fixes(self.R, pet):
+            if fx[0] == 'range':
+                _, sl, old, new, sk, reach = fx
+                setv(pet, sl + 'Range', new, 2)
+                notes.append('AI: %s %s -> %s (it reaches %g m)' % (sk.split(BS)[-1], old, new, reach))
+            else:
+                _, sl, kept, sk, dl, kdl = fx
+                for suf in ('SkillName', 'Chance', 'Delay', 'Range', 'Timeout'):
+                    delv(pet, sl + suf)
+                notes.append('AI: %s wired twice for the same distances - %s (delay %g s) kept, %s (delay %g s) out'
+                             % (sk.split(BS)[-1], kept, kdl, sl, dl))
+        return notes
+
+    def stationary(self, pet, anm):
+        """a soul whose run does not move it: a ranged basic attack of its own body, its old basic attack (a wave on a
+        cooldown) moved into the special slot of a skill its body has no animation for, a short leash -> notes"""
+        b = self.b
+        view = anim_view(pet, anm)
+        refs = {v[0].lower() for low, (n, v) in view.items() if re.search(r'SpecialAnimRef\d*$', n) and v and v[0]}
+        out = []
+        for ref, skill in STATIC_ATTACK:
+            if ref not in refs or key_of(skill) not in self.R:
+                continue
+            old = get1(pet, 'attackSkillName', '') or ''
+            if key_of(old) == key_of(skill):
+                break
+            if not any(key_of(get1(pet, 'skillName%d' % i, '') or '') == key_of(skill) for i in range(1, 34)):
+                free = next((i for i in range(1, 34) if not get1(pet, 'skillName%d' % i, '')), None)
+                if free is None:
+                    break
+                setv(pet, 'skillName%d' % free, skill)
+                setv(pet, 'skillLevel%d' % free, [1, 1, 1], 0)
+            setv(pet, 'attackSkillName', skill)
+            out.append('cannot walk: basic attack %s (was %s)' % (skill.split(BS)[-1], old.split(BS)[-1] or 'none'))
+            if old:
+                slots = ['specialAttack'] + ['specialAttack%d' % n for n in range(2, 6)]
+                mute = lambda s: (get1(self.R.get(key_of(get1(pet, s + 'SkillName', '') or '')) or {'vars': []},
+                                       'skillSpecialAnimationName', '') or '').lower()
+                slot = next((s for s in slots if get1(pet, s + 'SkillName', '') and mute(s) and mute(s) not in refs),
+                            None) or next((s for s in slots if not get1(pet, s + 'SkillName', '')), None)
+                if slot is not None:
+                    was = get1(pet, slot + 'SkillName', '') or ''
+                    setv(pet, slot + 'SkillName', old)
+                    setv(pet, slot + 'Range', 'AnyRange', 2)
+                    if not get1(pet, slot + 'Chance', 0):
+                        setv(pet, slot + 'Chance', 30.0, 1)
+                    out.append('cannot walk: %s -> %s at any range (instead of %s, no animation for it)' % (
+                        old.split(BS)[-1], slot, was.split(BS)[-1] or 'nothing'))
+            break
+        for fld, kind in (('controller', ''), ('controllerAggressive', 'aggressive'), ('controllerDefensive', 'defensive')):
+            setv(pet, fld, self.static_controller(kind))
+        out.append('cannot walk: teleports to the hero beyond %g m' % STATIC_TELEPORT)
+        return out
+
+    def static_controller(self, kind=''):
+        """the companion controller of that stance with a short leash (STATIC_TELEPORT)"""
+        b = self.b
+        name = self.ns + 'controller_static%s.dbr' % ('_' + kind if kind else '')
+        if self.R.get(key_of(name)) is None:
+            src = b.fast_controller(kind or 'normal')
+            c = b.clone(self.R[key_of(src)]['name'], name)
+            setv(c, 'TeleportToLeaderDistance', STATIC_TELEPORT, 1)
+            setv(c, 'FileDescription', 'TQ Together soul that cannot walk: %s companion controller, teleports at %g m'
+                 % (kind or 'normal', STATIC_TELEPORT))
+        return name
+
+    def pak(self):
+        """[{field: %}] of the pet difficulty pak for one player on Normal, Epic, Legendary (index 6 x difficulty)"""
+        if getattr(self, '_pak', None) is None:
+            r = self.R.get(key_of(PET_PAK))
+            self._pak = [{vn: float(vals[min(6 * d, len(vals) - 1)]) for vn, vt, vals in (r['vars'] if r else [])
+                          if vt in (0, 1) and vals} for d in range(3)]
+        return self._pak
+
+    def phys_eq(self):
+        r = self.R.get(key_of(COMBAT_EQ))
+        return (get1(r, 'physicalDamageEquation', '') or 'physicalDamageDV') if r is not None else 'physicalDamageDV'
+
+    def power(self, live):
+        """SoulDamage: one damage factor for every soul from the hero's character-window DPS (DAMAGE_FIELDS)"""
+        import build_companions as B
+        hero = float(getattr(B, 'HERO_DPS', 0) or 0)
+        share = self.st['souldamage']
+        dps = [f['dps'] for f in live if f['kind'] == 'boss' and f.get('dps', 0) > 0]
+        med = median(dps) if dps else 0.0
+        m = 1.0
+        if share > 0 and hero > 0 and med > 0:
+            m = float('%.2g' % max(1.0, min(DAMAGE_MAX, share / 100.0 * hero / med)))
+        self.ledger['damage'] = {'hero_dps': round(hero), 'median_soul_dps': round(med, 1), 'share': share, 'factor': m}
+        log('  souls: damage x%g (SoulDamage %g%% of the hero\'s %.0f DPS, the median boss soul\'s basic attack %.0f)'
+            % (m, share, hero, med))
+        if m <= 1.0 + 1e-9:
+            return
+        shared = None
+        for f in live:
+            # the hardest hitters are held like life (CORRIDOR): a boss's basic attack at most 1.5 x the median soul's,
+            # a hero monster's 1.0 x - Cerberus' bite (x3.5 the median) would hit harder than the hero himself. No
+            # floor: Arachne's hand is weak by design, her poison and her spiders do the work
+            hi = CORRIDOR[f['kind']][1]
+            mi = m
+            if f.get('dps', 0) > hi * med:
+                mi = float('%.2g' % max(1.0, m * hi * med / f['dps']))
+            if abs(mi - m) < 1e-9:
+                shared = shared or self.power_record(self.ns + 'soul_power.dbr', m)
+                r = shared
+            else:
+                r = self.power_record(self.ns + '%s_soulpower.dbr' % f['sid'], mi)
+            s = self.ledger['souls'][f['sid']]
+            if not self.add_skill(f, r):
+                s['notes'].append('no free skill slot: damage not raised')
+                continue
+            s['power'], s['damage'] = key_of(r['name']), mi
+            s['notes'].append('damage x%g: basic attack ~%.0f per second (%.0f%% of the hero\'s)%s' % (
+                mi, f.get('dps', 0) * mi, 100.0 * f.get('dps', 0) * mi / hero,
+                ', held at x%.1f the median soul\'s' % hi if mi < m - 1e-9 else ''))
+
+    def passive(self, name):
+        """an empty Skill_Passive of ours (the builder's plain passive with every stat taken out, weapon flags kept: it
+        is active with any weapon)"""
+        import build_companions as B
+        r = self.b.clone(self.R[key_of(B.PASSIVE_SRC)]['name'], name)
+        for vn, vt, vals in list(r['vars']):
+            if B.STAT_FIELD.match(vn) and (not vn.startswith('skill') or re.match(r'^skill(Cooldown|ManaCost|Projectile)', vn)):
+                delv(r, vn)
+        return r
+
+    def add_skill(self, f, r, levels=(1, 2, 3)):
+        """r into the soul's first free skill slot -> False if it has none"""
+        pet = self.R[f['pet_key']]
+        free = next((i for i in range(1, 34) if not get1(pet, 'skillName%d' % i, '')), None)
+        if free is None:
+            return False
+        setv(pet, 'skillName%d' % free, r['name'])
+        setv(pet, 'skillLevel%d' % free, list(levels), 0)
+        return True
+
+    def guard(self, live):
+        """1.7.4: the hero difficulty (Difficulty=power) makes the monsters' Legendary damage and accuracy HERO_DAMAGE
+        times the game's; the souls answer with life and defence on Legendary (levels 1/2/3 = Normal/Epic/Legendary,
+        the builder scales the Legendary entries only): life +(HD - 1) x (100 + the pet pak's %), defence + the
+        accuracy the monsters gained - a monster's blow lands on a soul as in vanilla Legendary"""
+        import build_companions as B
+        hd = float(getattr(B, 'HERO_DAMAGE', 1.0) or 1.0)
+        self.ledger['guard'] = {'hero_damage': hd}
+        if hd <= 1.0 + 1e-9:
+            return
+        ge = self.R.get(key_of(B.GAP_SRC))
+        mp = self.R.get(key_of(get1(ge, 'monsterAttributePak', '') or '')) if ge is not None else None
+        oa = getv(mp, 'characterOffensiveAbility') if mp is not None else None
+        oa_l = float(oa[min(12, len(oa) - 1)] or 0) if oa else 0.0          # already x HD (Builder.hero_life)
+        da = round(oa_l * (1 - 1 / hd), 1)
+        life = round((hd - 1) * (100.0 + self.pak()[2].get('characterLifeModifier', 0.0)), 1)
+        r = self.passive(self.ns + 'soul_guard.dbr')
+        setv(r, 'characterLifeModifier', [0.0, 0.0, life], 1)
+        setv(r, 'characterDefensiveAbility', [0.0, 0.0, da], 1)
+        setv(r, 'skillMaxLevel', 3, 0)
+        setv(r, 'FileDescription', 'TQ Together soul guard: monsters hit x%g on Legendary - life +%g %%, defence +%g'
+             % (hd, life, da))
+        self.ledger['guard'].update(life_pct=life, da=da, skill=key_of(r['name']))
+        log('  souls: guard against the hero difficulty (monster damage x%g on Legendary): life +%g%%, defence +%g'
+            % (hd, life, da))
+        for f in live:
+            s = self.ledger['souls'][f['sid']]
+            if self.add_skill(f, r):
+                s['guard'] = key_of(r['name'])
+            else:
+                s['notes'].append('no free skill slot: no guard against the hero difficulty')
+
+    def pace(self, live):
+        """1.7.5: the projectile speed the game gives every monster and boss on Epic / Legendary (+10 / +20 %, monster
+        pak skillProjectileSpeedModifier) and not pets - the soul's projectiles flew a fifth slower than its boss's"""
+        import build_companions as B
+        ge = self.R.get(key_of(B.GAP_SRC))
+        mp = self.R.get(key_of(get1(ge, 'monsterAttributePak', '') or '')) if ge is not None else None
+        sp = getv(mp, 'skillProjectileSpeedModifier') if mp is not None else None
+        vals = [float(sp[min(6 * d, len(sp) - 1)] or 0) for d in range(3)] if sp else [0.0, 0.0, 0.0]
+        self.ledger['pace'] = {'projectile': vals}
+        if not any(vals):
+            return
+        r = self.passive(self.ns + 'soul_pace.dbr')
+        setv(r, 'skillProjectileSpeedModifier', vals, 1)
+        setv(r, 'skillMaxLevel', 3, 0)
+        setv(r, 'FileDescription', 'TQ Together soul pace: projectile speed as a monster\'s, %s %% by difficulty' % vals)
+        self.ledger['pace']['skill'] = key_of(r['name'])
+        for f in live:
+            if self.add_skill(f, r):
+                self.ledger['souls'][f['sid']]['pace'] = key_of(r['name'])
+            else:
+                self.ledger['souls'][f['sid']]['notes'].append('no free skill slot: projectiles at the pet speed')
+
+    def power_record(self, name, m):
+        """Skill_Passive: every damage modifier +(m - 1) x (100 + the pet pak's %) at levels 1/2/3 = Normal/Epic/Legendary"""
+        r = self.passive(name)
+        pak = self.pak()
+        for fld in DAMAGE_FIELDS:
+            setv(r, fld, [round((m - 1.0) * (100.0 + pak[d].get(fld, 0.0)), 1) for d in range(3)], 1)
+        setv(r, 'skillMaxLevel', 3, 0)
+        setv(r, 'FileDescription', 'TQ Together soul power: damage x%g (levels 1/2/3 = Normal/Epic/Legendary)' % m)
+        return r
 
     # ------------------------------------------------------------------ drops (after Builder.eidolon_drops)
     def place(self):
@@ -933,7 +1496,8 @@ def MOD_CLASS():
 
 def fingerprint():
     import build_companions as B
-    return json.dumps({'souls': settings(), 'level': B.HERO_LEVEL}, sort_keys=True)
+    return json.dumps({'souls': settings(), 'level': B.HERO_LEVEL, 'dps': round(float(getattr(B, 'HERO_DPS', 0) or 0)),
+                       'v': '1.7.7'}, sort_keys=True)
 
 
 # ---------------------------------------------------------------------- self-check
@@ -947,6 +1511,9 @@ def check(R, baseR, ledger, log=print):
     st = ledger['settings']
     ctl = {key_of(B.NS + 'controller_companion.dbr'), key_of(B.NS + 'controller_companion_aggressive.dbr'),
            key_of(B.NS + 'controller_companion_defensive.dbr')}
+    ctl |= {key_of(B.NS + SUB + 'controller_static%s.dbr' % k) for k in ('', '_aggressive', '_defensive')}
+    dmg = ledger.get('damage') or {}
+    gd = ledger.get('guard') or {}
     for sid, s in ledger['souls'].items():
         pet = R.get(s['pet'])
         if pet is None:
@@ -969,13 +1536,27 @@ def check(R, baseR, ledger, log=print):
         # 1.6.2: nothing put down on death (the Tartarus soul left its reward orb). 1.6.3: no animation slower than the
         # lines (run on the ground, attack, skill) - anim_fixes finds nothing left to speed up
         for vn, vt_, v in pet['vars']:
-            if re.search(r'proxy|treasure|OnDeath', vn, re.I) and any(isinstance(x, str) and x for x in v):
+            if re.search(r'proxy|treasure|OnDeath|DropItemName', vn, re.I) and any(isinstance(x, str) and x for x in v):
                 bad.append('soul %s: %s=%s would be put down on death' % (sid, vn, v[0]))
-        left = anim_fixes(pet)
-        if min(float(x or 0) for x in (getv(pet, 'characterSpellCastSpeed') or [1.0])) < CAST_LINE - 1e-3:
-            left = left + [('', 0, 0, 'cast speed %s' % getv(pet, 'characterSpellCastSpeed'))]
+        rep = (R.peek(s['rep']) if hasattr(R, 'peek') else R.get(s['rep'])) if s['rep'] in R else None
+        # 1.7.0: a soul animated by a table has its own copy of it, and is checked on it
+        rep_tab = anim_table(R, rep) if rep is not None else None
+        tab = anim_table(R, pet)
+        if (rep_tab is None) != (tab is None) or (tab is not None and key_of(tab['name']) != s.get('anm')):
+            bad.append('soul %s: animation table %s, want its own copy of %s' % (
+                sid, tab and tab['name'], rep_tab and rep_tab['name']))
+        up = st.get('soulspeedmax', SPEEDUP_MAX)
+        left = anim_fixes(pet, rep, ledger.get('run_line', RUN_LINE), tab, rep_tab, giant=s.get('giant', False),
+                          speedup=up, atk_factor=ledger.get('atk_factor', 1.0), cast_factor=ledger.get('cast_factor', 1.0))
+        cast0 = min(float(x or 0) for x in (getv(rep, 'characterSpellCastSpeed') or [1.0])) if rep is not None else CAST_LINE
+        if min(float(x or 0) for x in (getv(pet, 'characterSpellCastSpeed') or [1.0])) < min(CAST_LINE, cast0 * up) - 1e-3:
+            left = left + [('', 0, 0, 'cast speed %s' % getv(pet, 'characterSpellCastSpeed'), False)]
         if left:
-            bad.append('soul %s: still slow - %s' % (sid, '; '.join(w for _, _, _, w in left[:3])))
+            bad.append('soul %s: still slow - %s' % (sid, '; '.join(x[3] for x in left[:3])))
+        # 1.7.3: and none faster than SoulSpeedMax x the boss's own (auras come on top)
+        fast = [(r, n) for r, n in speedups(pet, rep, tab, rep_tab) if r > up + 0.01] if rep is not None else []
+        if fast:
+            bad.append('soul %s: plays %s x%.2f its own, above SoulSpeedMax %g' % (sid, max(fast)[1], max(fast)[0], up))
         if g('monsterClassification') == 'Boss':
             bad.append('soul %s: still classified Boss' % sid)
         for vn, vt_, v in pet['vars']:
@@ -992,6 +1573,8 @@ def check(R, baseR, ledger, log=print):
                     bad.append('soul %s: skill %s missing' % (sid, nm))
                 if BOSS_ONLY_SKILL.search(k):
                     bad.append('soul %s: boss-only skill %s left' % (sid, k.split(BS)[-1]))
+                if k in R and get1(R[k], 'Class', '') in ARENA_SKILL_CLASS:
+                    bad.append('soul %s: arena skill %s left' % (sid, k.split(BS)[-1]))
                 lv = getv(pet, 'skillLevel%d' % i) or []
                 if len(lv) != 3:
                     bad.append('soul %s: skillLevel%d %s not per difficulty' % (sid, i, lv))
@@ -1033,6 +1616,34 @@ def check(R, baseR, ledger, log=print):
         if not s['sources'] and st['souls'] and (s['kind'] == 'boss' or st['soulheroes']) and \
                 all(st[k] == v for k, v in DEFAULTS if k.startswith('soul') and 'chance' in k):
             bad.append('soul %s: built but drops nowhere' % sid)
+        if dmg.get('factor', 1.0) > 1.0 + 1e-9:
+            pr = R.get(s.get('power') or '')
+            if pr is None or s['power'] not in own or get1(pr, 'Class') != 'Skill_Passive' or \
+                    len(getv(pr, 'offensivePhysicalModifier') or []) != 3 or not (1.0 <= s['damage'] <= dmg['factor']):
+                bad.append('soul %s: soul power passive %s missing, not per difficulty or off (x%s of x%g)' % (
+                    sid, s.get('power'), s.get('damage'), dmg['factor']))
+            elif abs(getv(pr, 'offensivePhysicalModifier')[0] - (s['damage'] - 1.0) * 100.0) > 0.11:
+                # level 1 = Normal, where the pet pak adds nothing: exactly (factor - 1) x 100 %
+                bad.append('soul %s: soul power x%g, its passive %s' % (sid, s['damage'], getv(pr, 'offensivePhysicalModifier')))
+        left_ai = ai_fixes(R, pet)
+        if left_ai:
+            bad.append('soul %s: AI slots shaking the air / wired twice: %s' % (sid, left_ai[:2]))
+        if (g('deleteBehavior') or '').strip() in DISSOLVE_NONE:
+            bad.append('soul %s: deleteBehavior %r - the body would stay lying' % (sid, g('deleteBehavior')))
+        pc = ledger.get('pace') or {}
+        if pc.get('skill') and s.get('pace') not in own:
+            bad.append('soul %s: no soul pace passive (projectile speed)' % sid)
+        # 1.7.4: the guard against the hero difficulty, and the boss's own immunity kept
+        if gd.get('hero_damage', 1.0) > 1.0 + 1e-9:
+            gr = R.get(gd.get('skill') or '')
+            if gr is None or s.get('guard') not in own or \
+                    [round(x, 1) for x in getv(gr, 'characterLifeModifier') or []] != [0.0, 0.0, gd['life_pct']]:
+                bad.append('soul %s: guard %s missing or not life +%g%% on Legendary only' % (sid, s.get('guard'),
+                                                                                             gd.get('life_pct')))
+        if rep is not None and any('boss_conversionimmunity' in (v[0] or '').lower() for vn, vt_, v in rep['vars']
+                                   if vn.startswith('skillName') and v) and \
+                not any(k.endswith(BS + 'boss_conversionimmunity.dbr') for k in own):
+            bad.append('soul %s: the boss\'s own immunity (boss_conversionimmunity) is gone' % sid)
     # kill odds: per Misc slot, every vanilla entry keeps its % and ours are as planned (eidolon shard: 1.5.1 odds)
     eid = key_of(B.NS + 'eidolon_shards.dbr')
     boss_pct = B.drop_chances()[1]
