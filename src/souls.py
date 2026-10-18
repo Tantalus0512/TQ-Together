@@ -51,8 +51,10 @@ from tqlib import get1, getv, setv, delv, key_of, BS
 SUB = 'souls' + BS
 # 1.6.6, owner: 30 % per boss was too easy (Soulvizier's soul of Typhon: about 6 %, one needed, ~17 kills) - 15 % for
 # 3 shards is ~20 boss fights, 12 % for a hero's 2 shards ~17
+# 1.8.0, owner 18.10 (the orbs now give hero monster souls): "from some 20 orbs one to three, sometimes none" - 10 -> 20 %
+# per orb (about 4 in 20; none in 20 about 1 % of the time)
 DEFAULTS = (('souls', 1), ('soulheroes', 1), ('soulbossshards', 3), ('soulheroshards', 2), ('soulbosschance', 15.0),
-            ('soulherochance', 12.0), ('soulorbchance', 10.0), ('soulchestchance', 15.0), ('soullife', 100.0),
+            ('soulherochance', 12.0), ('soulorbchance', 20.0), ('soulchestchance', 15.0), ('soullife', 100.0),
             ('soulmaxscale', 1.3), ('souldamage', 30.0), ('soulspeedmax', 2.0), ('soultestshop', ''))
 LIMITS = {'soulbossshards': (2, 5), 'soulheroshards': (2, 5), 'soulbosschance': (0, 95), 'soulherochance': (0, 95),
           'soulorbchance': (0, 50), 'soulchestchance': (0, 95), 'soullife': (10, 1000), 'soulmaxscale': (0.5, 3),
@@ -61,7 +63,7 @@ LIMITS = {'soulbossshards': (2, 5), 'soulheroshards': (2, 5), 'soulbosschance': 
 
 def settings():
     """TQTogether.ini: Souls=1, SoulHeroes=1, SoulBossShards=3, SoulHeroShards=2, SoulBossChance=15,
-    SoulHeroChance=12, SoulOrbChance=10, SoulChestChance=15, SoulLife=100 (%), SoulMaxScale=1.3,
+    SoulHeroChance=12, SoulOrbChance=20, SoulChestChance=15, SoulLife=100 (%), SoulMaxScale=1.3,
     SoulDamage=30 (% of the hero's damage per second the median boss soul deals with its basic attack; 0 = the boss's
     own damage only), SoulSpeedMax=2 (no animation of a soul faster than this many times the boss's own; 1 = the
     boss's own speeds), SoulTestShop=arachne,nessus (shards sold by the ring merchants - for testing)"""
@@ -1517,7 +1519,7 @@ def MOD_CLASS():
 def fingerprint():
     import build_companions as B
     return json.dumps({'souls': settings(), 'level': B.HERO_LEVEL, 'dps': round(float(getattr(B, 'HERO_DPS', 0) or 0)),
-                       'v': '1.7.9'}, sort_keys=True)
+                       'v': '1.8.0'}, sort_keys=True)
 
 
 # ---------------------------------------------------------------------- self-check

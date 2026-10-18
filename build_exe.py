@@ -90,7 +90,7 @@ def main():
                 '; SoulBossChance=15\n'
                 '; SoulHeroChance=12\n'
                 '; SoulChestChance=15\n'
-                '; SoulOrbChance=10\n'
+                '; SoulOrbChance=20\n'
                 '; soul life, % / здоровье душ, %\n'
                 '; SoulLife=100\n'
                 '; the average boss soul\'s basic attack, % of your hero\'s damage per second (0 = the boss\'s own damage) /\n'

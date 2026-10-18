@@ -1,6 +1,10 @@
 TQ Together - changelog
 =======================
 
+1.8.0
+- A soul from an electrum orb: 20% per orb instead of 10% (SoulOrbChance=20) - about 4 shards in 20 orbs on average,
+  and nothing at all about once in 100 (was 2 shards and 12%).
+
 1.7.9
 - Electrum orbs give the souls of their land's hero monsters (10% per orb), and boss souls come only from the bosses
   themselves and their chests: bosses are mightier than heroes. Only five bosses with no loot of their own stay in the
