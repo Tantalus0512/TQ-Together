@@ -476,16 +476,12 @@ def check(build, base_arz, log=print, touched=(), gear=None, souls=None):
     orb_pct, boss_pct = B.drop_chances()
 
     def kept(name, nf, of):
+        # 1.7.8: six entries a slot, as the engine reads them; a vanilla entry may sit inside our wrapper table
+        for n_, j_ in orb_odds.past_slot_max(nf):
+            bad.append('%s slot %d: entry %d past the six the game reads' % (name, n_, j_))
         for s_ in range(1, 7):
-            ch_n, ch_o = float((nf.get('loot%dChance' % s_) or [0])[0]), float((of.get('loot%dChance' % s_) or [0])[0])
-            Wn = sum(float((nf.get('loot%dWeight%d' % (s_, j)) or [0])[0]) for j in range(1, 40))
-            Wo = sum(float((of.get('loot%dWeight%d' % (s_, j)) or [0])[0]) for j in range(1, 40))
-            for j in range(1, 40):
-                x = (of.get('loot%dName%d' % (s_, j)) or [''])[0]
-                if not x:
-                    continue
-                pn = ch_n * float((nf.get('loot%dWeight%d' % (s_, j)) or [0])[0]) / Wn if Wn else 0
-                po_ = ch_o * float((of.get('loot%dWeight%d' % (s_, j)) or [0])[0]) / Wo if Wo else 0
+            for x, _w in orb_odds.slot_pairs(of, s_):
+                pn, po_ = orb_odds.kept_share(R, nf, s_, x), orb_odds.kept_share(vanR, of, s_, x)
                 if abs(pn - po_) > 1e-6:
                     bad.append('%s slot %d: vanilla entry %s odds %.6f -> %.6f' % (name, s_, x.split(BS)[-1], po_, pn))
     for name, price, t in orb_odds.orbs(R):

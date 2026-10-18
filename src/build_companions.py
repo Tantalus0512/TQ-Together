@@ -1626,19 +1626,28 @@ class Builder(object):
         six chances, so a per-item p_i with mean over N of 1-(1-p_i)^N = pct_i is solved for each, and the chance
         added to one slot is delta = P * total / (1 - P), P = sum of the p_i, split by weight. 1.6.0: several at once
         (the eidolon shard and the soul of the orb's region) - added one after the other, the second would dilute
-        the first. Inside that slot every vanilla entry keeps chance x weight / slot weight."""
+        the first. Inside that slot every vanilla entry keeps chance x weight / slot weight.
+        1.7.8 (owner 18.10: "a heap of electrum orbs, eidolon shards, not one soul shard"): the engine reads SIX entries
+        per slot (orb_odds.SLOT_MAX); the soul went in as the 7th or 8th and never dropped - in Hades', Tiamat's and the
+        Jade Emperor's orbs the eidolon shard neither, nor any soul of a boss chest. Now what we add is ONE entry: our
+        table alone, or a LootMasterTable of our tables by weight (shards_wrap), in a free entry of a slot (the relic
+        slot first); with no free entry anywhere it takes one vanilla entry in with ours - by weight, so that entry
+        keeps its odds as well."""
         entries = [(t, pct) for t, pct in entries if pct > 0]
         if not entries:
             return False
+        SM = orb_odds.SLOT_MAX
         total = sum(float(get1(loot, 'loot%dChance' % s_, 0) or 0) for s_ in range(1, 7))
         slots = []
         for s_ in range(1, 7):
             ch = float(get1(loot, 'loot%dChance' % s_, 0) or 0)
-            names = [(j, get1(loot, 'loot%dName%d' % (s_, j), '')) for j in range(1, 40)]
+            names = [(j, get1(loot, 'loot%dName%d' % (s_, j), '')) for j in range(1, SM + 1)]
+            free = [j for j, x in names if not x]
             names = [(j, x) for j, x in names if x]
             W = sum(float(get1(loot, 'loot%dWeight%d' % (s_, j), 0) or 0) for j, _ in names)
-            if ch and W and len(names) < 39:
-                slots.append((0 if any('relic' in x.lower() for _, x in names) else 1, ch, s_, W))
+            if ch and W:
+                slots.append((0 if free else 1, 0 if any('relic' in x.lower() for _, x in names) else 1, ch, s_, W,
+                              free, names))
         if not slots or total <= 0:
             return False
         ns = orb_odds.spawn_counts({vn: vals for vn, vt, vals in loot['vars']})
@@ -1654,30 +1663,48 @@ class Builder(object):
             ps.append((lo + hi) / 2)
         P = sum(ps)
         delta = P * total / (1 - P)
-        _, ch, s_, W = min(slots)
-        free = [j for j in range(1, 40) if not get1(loot, 'loot%dName%d' % (s_, j), '')]
-        if len(free) < len(entries):
-            return False
+        _, _, ch, s_, W, free, names = min(slots, key=lambda x: x[:4])
         # 1.6.0: small vanilla weights would round our shares coarsely - the slot's weights are scaled up first
         # (chance x weight / slot weight of every vanilla entry does not change)
         smallest = delta * min(ps) / P * W / ch
         if smallest < 2000:
             m = int(-(-2000 // max(smallest, 1e-9)))
-            for j in range(1, 40):
-                if get1(loot, 'loot%dName%d' % (s_, j), ''):
-                    setv(loot, 'loot%dWeight%d' % (s_, j), int(float(get1(loot, 'loot%dWeight%d' % (s_, j), 0) or 0)) * m, 0)
+            for j, _ in names:
+                setv(loot, 'loot%dWeight%d' % (s_, j), int(float(get1(loot, 'loot%dWeight%d' % (s_, j), 0) or 0)) * m, 0)
             W *= m
-        added = 0
-        for (t, pct), p, j in zip(entries, ps, free):
-            # weights are ints; scaled up so that two shards in one slot keep their ratio (eidolon 40 % next to a
-            # soul 10 %), the slot chance absorbs the rounding
-            w = max(1, int(round(delta * p / P * W / ch)))
-            setv(loot, 'loot%dName%d' % (s_, j), t)
-            setv(loot, 'loot%dWeight%d' % (s_, j), w, 0)
-            added += w
+        # weights are ints; scaled up so that two shards in one slot keep their ratio (eidolon 40 % next to a soul
+        # 10 %), the slot chance absorbs the rounding
+        mine = [(t, max(1, int(round(delta * p / P * W / ch)))) for (t, pct), p in zip(entries, ps)]
+        added = sum(w for _, w in mine)
+        if free:
+            j = free[0]
+            name = mine[0][0] if len(mine) == 1 else self.shards_wrap(loot, s_, mine)['name']
+            pos_w = added
+        else:
+            j, x = names[-1]
+            wx = int(float(get1(loot, 'loot%dWeight%d' % (s_, j), 0) or 0))
+            name, pos_w = self.shards_wrap(loot, s_, [(x, wx)] + mine)['name'], wx + added
+        setv(loot, 'loot%dName%d' % (s_, j), name)
+        setv(loot, 'loot%dWeight%d' % (s_, j), pos_w, 0)
         setv(loot, 'loot%dChance' % s_, ch * (W + added) / W, 1)   # every vanilla entry keeps ch*w_i/W exactly
         self.db.mark(loot['name'])
         return True
+
+    def shards_wrap(self, loot, slot, pairs):
+        """1.7.8: a LootMasterTable of [(table, weight)] taking ONE entry of `slot` in the loot record (the engine reads
+        six per slot): the tables are picked by weight, as they would be side by side in the slot"""
+        name = NS + 'shards' + BS + '%s_%d.dbr' % (hashlib.md5(loot['name'].lower().encode('utf-8')).hexdigest()[:10], slot)
+        t = self.clone(RELIC_TABLE_SRC, name)
+        for vn, vt, vals in list(t['vars']):
+            delv(t, vn)
+        setv(t, 'templateName', 'database' + BS + 'Templates' + BS + 'LootMasterTable.tpl')
+        setv(t, 'Class', 'LootMasterTable')
+        for i, (x, w) in enumerate(pairs, 1):
+            setv(t, 'lootName%d' % i, x)
+            setv(t, 'lootWeight%d' % i, int(w), 0)
+        setv(t, 'FileDescription', 'TQ Together: one entry of %s slot %d, %d tables by weight' % (
+            loot['name'].split(BS)[-1][:-4], slot, len(pairs)))
+        return t
 
     def eidolon_drops(self, relics, soul_orbs=None):
         """1.5.0: eidolon shards from electrum orbs of every difficulty (EidolonOrbChance % per orb). 1.5.1: and from

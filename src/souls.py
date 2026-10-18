@@ -1497,7 +1497,7 @@ def MOD_CLASS():
 def fingerprint():
     import build_companions as B
     return json.dumps({'souls': settings(), 'level': B.HERO_LEVEL, 'dps': round(float(getattr(B, 'HERO_DPS', 0) or 0)),
-                       'v': '1.7.7'}, sort_keys=True)
+                       'v': '1.7.8'}, sort_keys=True)
 
 
 # ---------------------------------------------------------------------- self-check
@@ -1686,18 +1686,14 @@ def check(R, baseR, ledger, log=print):
                 if abs(e - pct / 100.0) > 5e-3:
                     bad.append('chest %s: soul %.4f per opening, want %.4f' % (ck.split(BS)[-1], e, pct / 100.0))
             # against the table as the build has it (a tweak may have changed it before us: Tartarus' loot)
-            nf, of = orb_odds.fields(R[t_new]), orb_odds.fields(R[t_old] if t_old in R else baseR[t_old])
+            oR = R if t_old in R else baseR
+            nf, of = orb_odds.fields(R[t_new]), orb_odds.fields(oR[t_old])
+            # 1.7.8: six entries a slot, as the engine reads them; a vanilla entry may sit inside our wrapper table
+            for n_, j_ in orb_odds.past_slot_max(nf):
+                bad.append('chest %s slot %d: entry %d past the six the game reads' % (ck.split(BS)[-1], n_, j_))
             for s_ in range(1, 7):
-                chn, cho = float((nf.get('loot%dChance' % s_) or [0])[0]), float((of.get('loot%dChance' % s_) or [0])[0])
-                Wn = sum(float((nf.get('loot%dWeight%d' % (s_, j)) or [0])[0]) for j in range(1, 40))
-                Wo = sum(float((of.get('loot%dWeight%d' % (s_, j)) or [0])[0]) for j in range(1, 40))
-                for j in range(1, 40):
-                    x = (of.get('loot%dName%d' % (s_, j)) or [''])[0]
-                    if not x:
-                        continue
-                    pn = chn * float((nf.get('loot%dWeight%d' % (s_, j)) or [0])[0]) / Wn if Wn else 0
-                    po = cho * float((of.get('loot%dWeight%d' % (s_, j)) or [0])[0]) / Wo if Wo else 0
-                    if abs(pn - po) > 1e-6:
+                for x, _w in orb_odds.slot_pairs(of, s_):
+                    if abs(orb_odds.kept_share(R, nf, s_, x) - orb_odds.kept_share(oR, of, s_, x)) > 1e-6:
                         bad.append('chest %s slot %d: vanilla %s odds changed' % (ck.split(BS)[-1], s_, x.split(BS)[-1]))
     # electrum orbs of every difficulty: SoulOrbChance % per orb for a soul of the orb's region
     for reg, o in ledger['orbs'].items():
@@ -1710,6 +1706,8 @@ def check(R, baseR, ledger, log=print):
                 e = orb_odds.per_container(R, k, targets, p)
                 if abs(e - o['pct'] / 100.0) > 5e-3:
                     bad.append('orb %s: soul shard %.4f per orb, want %.4f' % (k.split(BS)[-1], e, o['pct'] / 100.0))
+                for n_, j_ in orb_odds.past_slot_max(orb_odds.fields(R[k])):
+                    bad.append('orb %s slot %d: entry %d past the six the game reads' % (k.split(BS)[-1], n_, j_))
         if not n:
             bad.append('orbs of region %s not found' % reg)
     nb = sum(1 for s in ledger['souls'].values() if s['kind'] == 'boss')

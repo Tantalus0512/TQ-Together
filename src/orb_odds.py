@@ -27,6 +27,44 @@ def fields(r):
 
 
 LOOT_WORDS = ('loot', 'container', 'proxies', 'pool', 'electrum', 'tqmod')
+# 1.7.8 (owner 18.10: "a heap of electrum orbs, eidolon shards, not one soul shard"): the engine reads SIX entries per
+# FixedItemLoot slot (lootNName1..6: the untouched game never names a 7th in 583 records) and 30 per LootMasterTable /
+# FixedWeight table. This model read 39 / 59, so the soul at entry 7 or 8 counted though the game never rolled it
+SLOT_MAX = 6
+TABLE_MAX = 30
+
+
+def slot_pairs(f, n):
+    """[(entry key, weight)] the engine reads in slot n of a FixedItemLoot record (field dict)"""
+    return [(key(f['loot%dName%d' % (n, j)][0]), float((f.get('loot%dWeight%d' % (n, j)) or [0])[0]))
+            for j in range(1, SLOT_MAX + 1) if (f.get('loot%dName%d' % (n, j)) or [''])[0]]
+
+
+def past_slot_max(f):
+    """[(slot, entry)] named past SLOT_MAX in a FixedItemLoot record (field dict): the engine never rolls them"""
+    return [(n, j) for n in range(1, 7) for j in range(SLOT_MAX + 1, 40) if (f.get('loot%dName%d' % (n, j)) or [''])[0]]
+
+
+def kept_share(R, f, n, x):
+    """chance x the weight share of table x in slot n - x itself, or x inside one of our wrapper tables (1.7.8: when a
+    slot had no free entry, ours went in together with one vanilla entry): what every vanilla entry must keep"""
+    ch = float((f.get('loot%dChance' % n) or [0])[0])
+    pairs = slot_pairs(f, n)
+    W = sum(w for _, w in pairs)
+    if not (ch and W):
+        return 0.0
+    x = key(x)
+    share = 0.0
+    for k, w in pairs:
+        if k == x:
+            share += w / W
+        elif 'tqmod' in k and R.get(k) is not None:
+            g = fields(R[k])
+            sub = [(key(g['lootName%d' % i][0]), float((g.get('lootWeight%d' % i) or [0])[0]))
+                   for i in range(1, TABLE_MAX + 1) if (g.get('lootName%d' % i) or [''])[0]]
+            Ws = sum(v for _, v in sub)
+            share += w / W * sum(v / Ws for s, v in sub if s == x) if Ws else 0.0
+    return ch * share
 
 
 def lootish(k):
@@ -54,15 +92,14 @@ def odds(R, targets):
             tot, total = 0.0, sum(float((f.get('loot%dChance' % n) or [0])[0]) for n in range(1, 7))
             for n in range(1, 7):
                 ch = float((f.get('loot%dChance' % n) or [0])[0])
-                pairs = [(key(f['loot%dName%d' % (n, j)][0]), float((f.get('loot%dWeight%d' % (n, j)) or [0])[0]))
-                         for j in range(1, 40) if (f.get('loot%dName%d' % (n, j)) or [''])[0]]
+                pairs = slot_pairs(f, n)
                 W = sum(w for _, w in pairs)
                 if ch and W and total:
                     tot += ch / total * sum(w / W * p(x) for x, w in pairs)
             return tot
         if cls in ('LootMasterTable', 'LootItemTable_FixedWeight'):
             pairs = [(key(f['lootName%d' % j][0]), float((f.get('lootWeight%d' % j) or [0])[0]))
-                     for j in range(1, 60) if (f.get('lootName%d' % j) or [''])[0]]
+                     for j in range(1, TABLE_MAX + 1) if (f.get('lootName%d' % j) or [''])[0]]
             W = sum(w for _, w in pairs)
             return sum(w / W * p(x) for x, w in pairs) if W else 0.0
         return 0.0

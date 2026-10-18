@@ -1,6 +1,12 @@
 TQ Together - changelog
 =======================
 
+1.7.8
+- Fixed: soul shards never dropped from electrum orbs and boss chests, and from the orbs of Hades, Tiamat and the
+  Jade Emperor neither did eidolon shards. The game reads only six entries per loot slot, ours went in as the
+  seventh to ninth. Now all of ours is one entry (a shared sub-table, the same odds inside), and the self-check counts
+  the odds by the game's own rules. A soul shard 10% per orb, an eidolon shard 40%, every other item as before.
+
 1.7.7
 - The souls' AI no longer shakes the air: waves (Talos' flamethrower, the Chimera's breath) and blasts around the
   caster are used only at distances they reach, not beyond (27 skills of various souls). A skill wired into the AI
