@@ -97,8 +97,9 @@ Where to get them
   - The gods of Asgard, Ylva, Mimir, Thrym and most Eternal Embers bosses drop nothing themselves - their souls are
     in the boss chest, 15% per opening (SoulChestChance=). Loot dropped in the Tartarus arena vanishes, so the
     Tartarus soul is in his reward orb as well.
-  - Electrum orbs: 10% per orb (SoulOrbChance=) for the soul of a random boss of the orb's land (Antiquity, Hades,
-    Scandia, Atlantis, Jade Emperor, Thebes). Hero monster souls are not in the orbs.
+  - Electrum orbs: 10% per orb (SoulOrbChance=) for the soul of a random hero monster of the orb's land (Antiquity,
+    Hades, Scandia, Atlantis, Jade Emperor, Thebes). Boss souls (1.7.9) come only from the bosses themselves and their
+    chests; only those with no loot of their own are left in the orbs (Baldr, the three Chaos bosses, Toxeanubis).
   Every other item keeps its chance. Shards of one soul drop on every difficulty and stack together.
 
 The soul in battle

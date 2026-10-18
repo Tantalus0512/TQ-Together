@@ -32,8 +32,9 @@ Where souls drop (every vanilla item keeps its exact odds):
     chance per FIGHT;
   - bosses that drop nothing themselves (the Aesir, Ylva, Mimir, most Eternal Embers bosses): their boss chest, found
     by its name (bosschest10_aesir_01..03 and repeat chests), SoulChestChance % per opening;
-  - electrum orbs: SoulOrbChance % per orb for one soul shard of a random boss of the orb's region (Antiquity, Hades,
-    Scandia, Atlantis, Jade Emperor, Thebes). Hero monsters are not in the orbs: 300 of them would dilute it to nothing.
+  - electrum orbs: SoulOrbChance % per orb for one soul shard of a random HERO MONSTER of the orb's region (Antiquity,
+    Hades, Scandia, Atlantis, Jade Emperor, Thebes) - 1.7.9, owner: a boss's soul comes from the boss itself; only the
+    bosses with no drop and no chest of their own (Baldr, the Chaos bosses) stay in the orbs. (1.6.0-1.7.8: bosses.)
 Not built: a family with no possible drop source, no skills, or that cannot move.
 
 Records: records\\tqmod\\companions\\souls\\<sid>_{soul,soulbonus,soulbonustable,soulshard,soulcall,soulpet}.dbr, sid
@@ -383,12 +384,18 @@ CHEST_EN = (('freyja', r'^bosschest10_aesir'), ('wodan', r'^bosschest10_aesir'),
             ('qiong qi', r'qiongqi'), ('sihai', r'sihailongwang'), ('akhenaten', r'akhenaten'), ('huoshen', r'huoshen'),
             ('shen ~', r'^boss_o_shen'), ('the ten suns', r'^boss_o_sun(_repeat)?\.dbr$'), ('sanshou', r'sanshou'),
             ('exhumed medjai', r'exhumed ?madjai'), ('pirate captain', r'ghostpiratecap'), ('feiyi', r'feiyi'),
-            ('demonic elemental', r'demonicelemental'), ('yaoguai', r'yaoguai'))
+            ('demonic elemental', r'demonicelemental'), ('yaoguai', r'yaoguai'),
+            # 1.7.9: their souls came from the orbs only - their own chests (Celestial Accord: the Ten Suns merged, one
+            # fight). Not Toxeanubis: bosschest18_devhell is Ragnarok's Dark Chest of Wonders
+            ('zazamankh', r'^boss_o_zazamankh(_repeat)?\.dbr$'), ('celestial accord', r'^boss_o_sun(_repeat)?\.dbr$'))
 # electrum orb regions (x4_electrumorb_<region>_<tier>_loot): by the folder of the boss's own records
 REGION_DIR = (('records' + BS + 'creature' + BS, '1_antiquity'), ('records' + BS + 'xpack' + BS, '2_hades'),
               ('records' + BS + 'xpack2' + BS, '3_scandia'), ('records' + BS + 'xpack3' + BS, '4_tiamat'))
 CHINA_EN = ('feiyi', 'qiong qi', 'sihai', 'huoshen', 'shen ~', 'the ten suns', 'celestial accord', 'colossal fire elemental',
-            'sanshou')
+            'sanshou', 'saixi')
+# 1.7.9: Eternal Embers hero monsters (xpack4) by the folder of their creature: the Jade Emperor's lands, else Thebes
+CHINA_DIR = ('monk', 'monkeys', 'mogwai', 'terracotta', 'yaoguai', 'earth elemental', 'metal elemental',
+             'water elemental', 'wood elemental', 'fire elementals')
 # pet panel icon by race (vanilla pets of that kind)
 ICONS = {'animal': ('InGameUI\\Icons\\Party\\WolfUp01.tex', 'InGameUI\\Icons\\Party\\WolfDown01.tex'),
          'undead': ('InGameUI\\Icons\\Party\\LicheKingUp01.tex', 'InGameUI\\Icons\\Party\\LicheKingDown01.tex'),
@@ -697,7 +704,9 @@ class Souls(object):
         for d, reg in REGION_DIR:
             if k.startswith(d):
                 return reg
-        return '5_jadeemperor' if any(f['en'].startswith(c) for c in CHINA_EN) else '6_thebes'
+        folder = (k.split(BS)[4] if len(k.split(BS)) > 5 else '').lower()       # records\xpack4\creatures\monster\X
+        china = any(f['en'].startswith(c) for c in CHINA_EN) or folder in CHINA_DIR
+        return '5_jadeemperor' if china else '6_thebes'
 
     # ------------------------------------------------------------------ drop sources (planned before building)
     def misc_room(self, r, p):
@@ -749,8 +758,10 @@ class Souls(object):
             rx = next((re.compile(c) for e, c in CHEST_EN if f['en'].startswith(e)), None)
             if rx:
                 chests = sorted(k for k in self.chests() if rx.search(k.split(BS)[-1]))
+        # 'orb' decides whether a soul can be built at all (bosses, since 1.6.0 - the set of souls must not change);
+        # which souls the orbs actually give is decided in build() (1.7.9: hero monsters, and bosses with no own drop)
         orb = self.region(f) if f['kind'] == 'boss' else None
-        return {'p': p, 'k_fight': k_fight, 'misc': misc, 'chests': chests, 'orb': orb}
+        return {'p': p, 'k_fight': k_fight, 'misc': misc, 'chests': chests, 'orb': orb, 'region': self.region(f)}
 
     def dropping(self, kind):
         """the ini lets this kind of soul drop (Souls=1, SoulHeroes=1 for hero monsters)"""
@@ -811,12 +822,21 @@ class Souls(object):
         log('  souls: %d bosses, %d hero monsters (hero level %s), %d not built%s' % (
             n['boss'], n['hero'], self.H or 'unknown - their own', len(self.report) - len(live),
             '' if self.st['souls'] else ' - Souls=0: built, but they drop nowhere'))
-        # orb tables per region
-        if self.st['soulorbchance'] > 0 and self.dropping('boss'):
+        # orb tables per region. 1.7.9 (owner 18.10: "the bosses are mightier than heroes - their souls from the bosses
+        # themselves, the electrum orbs should give the hero monsters' souls"): the orbs give hero monster souls, and a
+        # boss's only when it drops nothing itself and has no chest (Baldr, the three Chaos bosses: their loot is the
+        # chaos dungeon's shared chest; Toxeanubis) - without the orbs those could not be had at all
+        if self.st['soulorbchance'] > 0:
             by = collections.defaultdict(list)
             for f in live:
-                if f['plan']['orb']:
-                    by[f['plan']['orb']].append(f['relic'])
+                pl = f['plan']
+                if f['kind'] == 'hero':
+                    reg = pl['region'] if self.dropping('hero') else None
+                else:
+                    reg = pl['orb'] if self.dropping('boss') and not (pl['misc'] or pl['chests']) else None
+                self.ledger['souls'][f['sid']]['orb'] = reg
+                if reg:
+                    by[reg].append(f['relic'])
             for reg, relics in sorted(by.items()):
                 t = self.table(self.ns + 'orb_%s.dbr' % reg, relics, 'souls of the %s electrum orbs' % reg)
                 self.orb_entries[reg] = (t['name'], self.st['soulorbchance'])
@@ -1497,7 +1517,7 @@ def MOD_CLASS():
 def fingerprint():
     import build_companions as B
     return json.dumps({'souls': settings(), 'level': B.HERO_LEVEL, 'dps': round(float(getattr(B, 'HERO_DPS', 0) or 0)),
-                       'v': '1.7.8'}, sort_keys=True)
+                       'v': '1.7.9'}, sort_keys=True)
 
 
 # ---------------------------------------------------------------------- self-check
