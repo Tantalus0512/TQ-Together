@@ -123,13 +123,21 @@ def engine_round(x):
     return int(max(0.0, x) + 0.5)
 
 
+# 1.8.2: the Tartarus reward orb (FixedItemLootTartarus.tpl) has no count equations - its controller
+# (FixedItemContainerControllerTartarus::SelectLootNumber 0x10180ed0) gives floor(V) items and one more with the
+# chance frac(V), V = the arena's uniqueLootChanceEquation, which grows with the cycle: on Legendary at arena level 85
+# about 0.4 / 1.1 / 2.0 / 3.4 / 5.1 items on cycles 1-5. Owner 19.10: the soul's % per orb is exact on the 3rd cycle
+TARTARUS_REF_ITEMS = [2]
+
+
 def spawn_counts(f, players=1):
     """FixedItemController::SelectLootNumber: the item count is drawn between the two rounded equations. A table with
-    no equations (FixedItemLootTartarus: its class picks the count itself) counts as one item"""
+    no equations counts as one item; the Tartarus reward orb as TARTARUS_REF_ITEMS"""
     lo = eval_count((f.get('numSpawnMinEquation') or [''])[0], players)
     hi = eval_count((f.get('numSpawnMaxEquation') or [''])[0], players)
     if lo is None and hi is None:
-        return [1]
+        tpl = ((f.get('templateName') or [''])[0] or '').lower()
+        return list(TARTARUS_REF_ITEMS) if tpl.endswith('fixeditemloottartarus.tpl') else [1]
     lo = engine_round(lo if lo is not None else hi)
     hi = engine_round(hi if hi is not None else lo)
     lo, hi = min(lo, hi), max(lo, hi)

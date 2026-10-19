@@ -53,17 +53,23 @@ SUB = 'souls' + BS
 # 3 shards is ~20 boss fights, 12 % for a hero's 2 shards ~17
 # 1.8.0, owner 18.10 (the orbs now give hero monster souls): "from some 20 orbs one to three, sometimes none" - 10 -> 20 %
 # per orb (about 4 in 20; none in 20 about 1 % of the time)
+# 1.8.2, owner 19.10: the ordinary chests of the Tartarus arenas give a soul of any boss or hero monster, 10 % per
+# opening, bosses and heroes equally likely as groups (SoulTartarusChance)
 DEFAULTS = (('souls', 1), ('soulheroes', 1), ('soulbossshards', 3), ('soulheroshards', 2), ('soulbosschance', 15.0),
-            ('soulherochance', 12.0), ('soulorbchance', 20.0), ('soulchestchance', 15.0), ('soullife', 100.0),
-            ('soulmaxscale', 1.3), ('souldamage', 30.0), ('soulspeedmax', 2.0), ('soultestshop', ''))
+            ('soulherochance', 12.0), ('soulorbchance', 20.0), ('soulchestchance', 15.0), ('soultartaruschance', 10.0),
+            ('soullife', 100.0), ('soulmaxscale', 1.3), ('souldamage', 30.0), ('soulspeedmax', 2.0), ('soultestshop', ''))
 LIMITS = {'soulbossshards': (2, 5), 'soulheroshards': (2, 5), 'soulbosschance': (0, 95), 'soulherochance': (0, 95),
-          'soulorbchance': (0, 50), 'soulchestchance': (0, 95), 'soullife': (10, 1000), 'soulmaxscale': (0.5, 3),
-          'souldamage': (0, 500), 'soulspeedmax': (1.0, 3.0)}
+          'soulorbchance': (0, 50), 'soulchestchance': (0, 95), 'soultartaruschance': (0, 50), 'soullife': (10, 1000),
+          'soulmaxscale': (0.5, 3), 'souldamage': (0, 500), 'soulspeedmax': (1.0, 3.0)}
+# 1.8.2: the ordinary chests the Tartarus arenas put down (proxy 01x_tartarus, "Non-Golden chest in Tartarus") - the
+# Underworld's own chests are 0Nb_ / 0Nc_; the reward orb after Tartarus himself is bosschest_tartarus_0N
+TARTARUS_ARENA_CHEST = re.compile(r'^0[123]x_hadeschest_(common|infreq|rare)\.dbr$')
 
 
 def settings():
     """TQTogether.ini: Souls=1, SoulHeroes=1, SoulBossShards=3, SoulHeroShards=2, SoulBossChance=15,
-    SoulHeroChance=12, SoulOrbChance=20, SoulChestChance=15, SoulLife=100 (%), SoulMaxScale=1.3,
+    SoulHeroChance=12, SoulOrbChance=20, SoulChestChance=15, SoulTartarusChance=10 (% per ordinary chest of the
+    Tartarus arenas: a soul of any boss or hero monster), SoulLife=100 (%), SoulMaxScale=1.3,
     SoulDamage=30 (% of the hero's damage per second the median boss soul deals with its basic attack; 0 = the boss's
     own damage only), SoulSpeedMax=2 (no animation of a soul faster than this many times the boss's own; 1 = the
     boss's own speeds), SoulTestShop=arachne,nessus (shards sold by the ring merchants - for testing)"""
@@ -302,15 +308,79 @@ def walks(view):
     return max(r[0] for r in runs) > 0.05
 
 
-def basic_dps(pet, table, pak, eq):
+WEAPON_CLASS = re.compile(r'^Weapon', re.I)
+WEAPON_DAMAGE = ('physical', 'pierce', 'cold', 'fire', 'lightning', 'poison', 'life')     # fields() is lowercase
+_WEAPON_AVG = {}
+
+
+def _weapon_avg(R, k, depth=0):
+    """average base hit of the weapons a loot record leads to (every table entry by its weight; a DynWeight table's
+    level windows taken as equal), None if it leads to none"""
+    if k in _WEAPON_AVG:
+        return _WEAPON_AVG[k]
+    _WEAPON_AVG[k] = None
+    if depth > 10 or k not in R:
+        return None
+    r = R.peek(k) if hasattr(R, 'peek') else R[k]
+    F = fields(r)
+    if WEAPON_CLASS.match((F.get('class') or [''])[0] or ''):
+        hit = sum((float((F.get('offensive%smin' % t) or [0])[0] or 0) +
+                   max(float((F.get('offensive%smax' % t) or [0])[0] or 0), float((F.get('offensive%smin' % t) or [0])[0] or 0)))
+                  / 2.0 for t in WEAPON_DAMAGE)
+        _WEAPON_AVG[k] = hit if hit > 0 else None
+        return _WEAPON_AVG[k]
+    acc = tot = 0.0
+    for j in range(1, 31):
+        v = F.get('lootname%d' % j)
+        if not v or not v[0]:
+            continue
+        w = float((F.get('lootweight%d' % j) or [1])[0] or 0)
+        h = _weapon_avg(R, key_of(v[0]), depth + 1) if w > 0 else None
+        if h is not None:
+            acc, tot = acc + w * h, tot + w
+    _WEAPON_AVG[k] = acc / tot if tot else None
+    return _WEAPON_AVG[k]
+
+
+def weapon_hit(R, rec, d=2):
+    """1.8.3 (owner 19.10: "the Faceless One kills everything with one blow, harder than me"): (average base hit of the
+    weapon a creature carries in its right hand on difficulty d, the chance it carries one) - its equip loot
+    (chanceToEquipRightHand, lootRightHandItemN by chanceToEquipRightHandItemN) walked down to the weapons. 91 souls
+    fight with a weapon; their basic attack was measured by the bare hand (most have none: measured 0), so no corridor
+    held them and the pace with the hero was not made up for - the Faceless One hit at half the hero's DPS, 21 souls
+    above it. (0, 0) for a creature without a weapon"""
+    F = fields(rec)
+    # the right hand first; a bow is carried in the LEFT hand (the Alfar archers: no right-hand weapon at all)
+    for hand in ('righthand', 'lefthand'):
+        ch = float((F.get('chancetoequip%s' % hand) or [0])[0] or 0)
+        if ch <= 0:
+            continue
+        acc = tot = 0.0
+        for j in range(1, 7):
+            v = F.get('loot%sitem%d' % (hand, j))
+            w = float((F.get('chancetoequip%sitem%d' % (hand, j)) or [0])[0] or 0)
+            if v and v[0] and w > 0:
+                h = _weapon_avg(R, key_of(v[min(d, len(v) - 1)]))
+                if h is not None:
+                    acc, tot = acc + w * h, tot + w
+        if tot:
+            return acc / tot, min(1.0, ch / 100.0)
+    return 0.0, 0.0
+
+
+def basic_dps(pet, table, pak, eq, weapon=(0.0, 0.0)):
     """1.7.0: damage per second of a soul's basic attack, for SoulDamage: its hand hit with the pet pak's Legendary
     physical bonus and its strength (combatequations physicalDamageEquation), over its attack time (its attack
-    animations at its attack speed with the pak's). 0 for a creature that fights with a weapon only (no hand hit).
+    animations at its attack speed with the pak's). 1.8.3: weapon = weapon_hit() - a creature strikes with the weapon
+    it carries, not the hand (0 for one with neither).
     Only the median of the bosses is used: every soul gets the same factor and keeps its strength among the others."""
     from soul_anims import ANIMS
     F = anim_view(pet, table)
     g = lambda k, d=0.0: float(((F.get(k.lower()) or (None, [d]))[1] or [d])[-1] or d)
     hit = (g('handHitDamageMin') + g('handHitDamageMax')) / 2.0
+    w, wc = weapon
+    if w > 0:
+        hit = wc * w + (1 - wc) * hit
     if hit <= 0:
         return 0.0
     hit *= 1 + pak.get('offensivePhysicalModifier', 0.0) / 100.0
@@ -332,6 +402,14 @@ def basic_dps(pet, table, pak, eq):
                 times.append(info[1] / max(sp * speed, 1e-3))
     t = median(times) if times else 1.2
     return hit / max(t, 0.2)
+
+
+def floor2(x):
+    """x cut DOWN to two significant digits (17.94 -> 17, 1.857 -> 1.8)"""
+    if x <= 0:
+        return 0.0
+    e = math.floor(math.log10(x)) - 1
+    return round(math.floor(x / 10.0 ** e + 1e-9) * 10.0 ** e, 6)
 
 
 def median(xs):
@@ -563,6 +641,7 @@ def fight_tag(k):
 class Souls(object):
     def __init__(self, b, hero_level=0, hero=''):
         self.b, self.R, self.H, self.hero = b, b.R, int(hero_level or 0), hero
+        _WEAPON_AVG.clear()                     # 1.8.3: weapon tables as this database has them (tweaks)
         self.st = settings()
         self.ns = b_ns() + SUB
         self.peek = getattr(b.R, 'peek', None) or b.R.__getitem__   # read-only: no cache
@@ -867,6 +946,31 @@ class Souls(object):
                 self.orb_entries[reg] = (t['name'], self.st['soulorbchance'])
                 self.ledger['orbs'][reg] = {'table': key_of(t['name']), 'relics': sorted(key_of(x) for x in relics),
                                             'pct': self.st['soulorbchance']}
+        # 1.8.2 (owner 19.10): the ordinary chests of the Tartarus arenas give a soul of any boss or hero monster -
+        # one table of all bosses and one of all heroes, equally likely, so the 78 bosses do not drown among 301 heroes
+        self.tartarus_pool = None
+        if self.st['soultartaruschance'] > 0:
+            halves = []
+            for kind, what in (('boss', 'bosses'), ('hero', 'heroes')):
+                rel = sorted(f['relic'] for f in live if f['kind'] == kind and self.dropping(kind))
+                if rel:
+                    halves.append((self.table(self.ns + 'tartarus_%s.dbr' % what, rel,
+                                              'souls of all %s for the Tartarus arena chests' % what), rel, what))
+            if len(halves) == 1:
+                pool = halves[0][0]
+            elif halves:
+                pool = self.b.clone(RELIC_TABLE_SRC(), self.ns + 'tartarus_souls.dbr')
+                pool['vars'] = []
+                setv(pool, 'templateName', 'database' + BS + 'Templates' + BS + 'LootMasterTable.tpl')
+                setv(pool, 'Class', 'LootMasterTable')
+                for i, (t, _rel, _what) in enumerate(halves, 1):
+                    setv(pool, 'lootName%d' % i, t['name'])
+                    setv(pool, 'lootWeight%d' % i, 100, 0)
+                setv(pool, 'FileDescription', 'TQ Together: a soul of any boss or hero monster, bosses and heroes '
+                                              'equally likely (Tartarus arena chests)')
+            if halves:
+                self.tartarus_pool = (pool['name'], sorted(key_of(x) for _t, rel, _w in halves for x in rel),
+                                      {what: len(rel) for _t, rel, what in halves})
 
     def full(self, f, lg):
         t = self.text(f['tag'], lg) or self.text(f['tag'], 'en') or literal(f['tag']) or f['sid']
@@ -1138,7 +1242,9 @@ class Souls(object):
         pace (SoulDamage is measured on it); skills keep their damage per cast and only wind up faster"""
         import copy
         pak, eq = self.pak()[2], self.phys_eq()
-        dps = basic_dps(pet, anm, pak, eq)
+        wpn = weapon_hit(self.R, pet)          # 1.8.3: a soul with a weapon strikes with it
+        f['weapon'] = wpn
+        dps = basic_dps(pet, anm, pak, eq, wpn)
         if dps <= 0 or (self.atk_factor <= 1.0 + 1e-9 and self.cast_factor <= 1.0 + 1e-9):
             return dps
         p0, a0 = copy.deepcopy(pet), copy.deepcopy(anm) if anm is not None else None
@@ -1150,9 +1256,17 @@ class Souls(object):
                     setv(p0, spname, [up(x) for x in v], 1)
                 else:
                     setv(a0 if in_tab else p0, spname, up(v), 1)
-        dps0 = basic_dps(p0, a0, pak, eq)
+        dps0 = basic_dps(p0, a0, pak, eq, wpn)
         if dps0 <= 0 or dps <= dps0 * 1.001:
             return dps0 or dps
+        if wpn[0] > 0:
+            # 1.8.3: a weapon cannot be made lighter for one soul (its item is the game's) - the soul's damage factor
+            # takes the speed-up back instead (power(): factor x pace_r)
+            f['pace_r'] = dps0 / dps
+            notes.append('pace with the hero: strikes x%g, casts x%g (within SoulSpeedMax); fights with a weapon - '
+                         'damage factor x%.2f so its damage per second stays as at its own pace' % (
+                             self.atk_factor, self.cast_factor, f['pace_r']))
+            return dps0
         hands = [(fld, [float(x or 0) for x in getv(pet, fld) or []]) for fld in ('handHitDamageMin', 'handHitDamageMax')]
         r = 1.0
         for _ in range(4):               # damage = (hand x a + b) / time: a few steps to land on dps0
@@ -1263,24 +1377,32 @@ class Souls(object):
         for f in live:
             # the hardest hitters are held like life (CORRIDOR): a boss's basic attack at most 1.5 x the median soul's,
             # a hero monster's 1.0 x - Cerberus' bite (x3.5 the median) would hit harder than the hero himself. No
-            # floor: Arachne's hand is weak by design, her poison and her spiders do the work
+            # floor: Arachne's hand is weak by design, her poison and her spiders do the work.
+            # 1.8.3: dps counts the weapon a soul fights with; pace_r (a weapon soul striking at the hero's pace) is
+            # taken off the factor - the hand of such a soul was lightened, its weapon never was
             hi = CORRIDOR[f['kind']][1]
             mi = m
             if f.get('dps', 0) > hi * med:
-                mi = float('%.2g' % max(1.0, m * hi * med / f['dps']))
-            if abs(mi - m) < 1e-9:
+                mi = m * hi * med / f['dps']
+            pr = f.get('pace_r', 1.0)
+            # rounded once and DOWN to two digits when held: rounding twice to nearest let one soul past its corridor
+            me = m if abs(mi * pr - m) < 1e-9 else max(1.0, floor2(mi * pr))
+            if abs(me - m) < 1e-9:
                 shared = shared or self.power_record(self.ns + 'soul_power.dbr', m)
                 r = shared
             else:
-                r = self.power_record(self.ns + '%s_soulpower.dbr' % f['sid'], mi)
+                r = self.power_record(self.ns + '%s_soulpower.dbr' % f['sid'], me)
             s = self.ledger['souls'][f['sid']]
+            s['basic'], s['pace_r'] = round(f.get('dps', 0), 2), round(pr, 4)
             if not self.add_skill(f, r):
                 s['notes'].append('no free skill slot: damage not raised')
                 continue
-            s['power'], s['damage'] = key_of(r['name']), mi
-            s['notes'].append('damage x%g: basic attack ~%.0f per second (%.0f%% of the hero\'s)%s' % (
-                mi, f.get('dps', 0) * mi, 100.0 * f.get('dps', 0) * mi / hero,
-                ', held at x%.1f the median soul\'s' % hi if mi < m - 1e-9 else ''))
+            s['power'], s['damage'] = key_of(r['name']), me
+            s['notes'].append('damage x%g: basic attack ~%.0f per second (%.0f%% of the hero\'s)%s%s%s' % (
+                me, f.get('dps', 0) * mi, 100.0 * f.get('dps', 0) * mi / hero,
+                ' with its weapon' if (f.get('weapon') or (0, 0))[0] > 0 else '',
+                ', held at x%.1f the median soul\'s' % hi if mi < m - 1e-9 else '',
+                ', x%.3g before the pace with the hero' % mi if abs(me - mi) > 1e-9 else ''))
 
     def passive(self, name):
         """an empty Skill_Passive of ours (the builder's plain passive with every stat taken out, weapon flags kept: it
@@ -1395,8 +1517,24 @@ class Souls(object):
         # other, the second would dilute the first one's odds
         for ck, entries in sorted(by_chest.items()):
             self.add_chest(ck, entries)
-        log('  souls drop from %d monster records, %d boss chests, electrum orbs of %d regions' % (
-            n_misc, len(by_chest), len(self.ledger['orbs'])))
+        # 1.8.2: every ordinary chest of the Tartarus arenas (common, infrequent, rare; all difficulties), its count
+        # equations raised so the vanilla items (mostly potions) stay as many as the rounding allows
+        n_tart = 0
+        if getattr(self, 'tartarus_pool', None):
+            pool, relics, sizes = self.tartarus_pool
+            pct = self.st['soultartaruschance']
+            for ck in sorted(k for k in self.chests() if TARTARUS_ARENA_CHEST.search(k.split(BS)[-1])):
+                self.add_chest(ck, [(pool, pct)], targets={key_of(pool): relics})
+                n_tart += 1
+            if n_tart:
+                inpool = set(relics)
+                for sid, s in self.ledger['souls'].items():
+                    if s['relic'] in inpool:
+                        n = sizes['bosses' if s['kind'] == 'boss' else 'heroes']
+                        s['sources'].append('Tartarus arena chests %g%% (one of %d %s, half the chance)' % (
+                            pct, n, 'bosses' if s['kind'] == 'boss' else 'heroes'))
+        log('  souls drop from %d monster records, %d boss chests, electrum orbs of %d regions, %d Tartarus arena '
+            'chests' % (n_misc, len(by_chest), len(self.ledger['orbs']), n_tart))
         shop = [x.strip() for x in self.st['soultestshop'].split(',') if x.strip()]
         if shop:
             relics = [s['relic'] for sid, s in self.ledger['souls'].items()
@@ -1432,9 +1570,10 @@ class Souls(object):
         setv(r, 'chanceToEquipMisc%d' % n, c2, 1)
         self.b.db.mark(r['name'])
 
-    def add_chest(self, ck, entries):
+    def add_chest(self, ck, entries, targets=None):
         """the chest's loot tables are shared with other chests: our own copy per chest, every soul shard added with
-        its % per opening (Builder.add_shards: vanilla entries keep their odds)"""
+        its % per opening (Builder.add_shards: vanilla entries keep their odds). targets {table: [relics]} for a table
+        that is not one soul's shard table (1.8.2: the Tartarus pool of all souls)"""
         b, R = self.b, self.R
         chest = R[ck]
         tabs = getv(chest, 'tables') or []
@@ -1448,7 +1587,7 @@ class Souls(object):
         setv(chest, 'tables', new)
         b.db.mark(chest['name'])
         self.ledger['chests'][ck] = {'tables': [key_of(x) for x in new], 'orig': [key_of(x) for x in tabs],
-                                     'souls': {key_of(t): pct for t, pct in entries}}
+                                     'souls': {key_of(t): pct for t, pct in entries}, 'targets': targets or {}}
 
     # ------------------------------------------------------------------ helpers into build_companions
     def b_ours(self):
@@ -1700,6 +1839,12 @@ def check(R, baseR, ledger, log=print):
             elif abs(getv(pr, 'offensivePhysicalModifier')[0] - (s['damage'] - 1.0) * 100.0) > 0.11:
                 # level 1 = Normal, where the pet pak adds nothing: exactly (factor - 1) x 100 %
                 bad.append('soul %s: soul power x%g, its passive %s' % (sid, s['damage'], getv(pr, 'offensivePhysicalModifier')))
+            # 1.8.3: its basic attack (weapon counted) at the hero's pace x its factor within its corridor - the
+            # weapon souls ran past it unseen (the Faceless One at half the hero's DPS)
+            cap = CORRIDOR[s['kind']][1] * dmg.get('median_soul_dps', 0) * dmg['factor']
+            real = s.get('basic', 0) / max(s.get('pace_r', 1.0), 1e-9) * s['damage']
+            if s['damage'] > 1.0 + 1e-9 and cap > 0 and real > cap * 1.06:
+                bad.append('soul %s: basic attack %.0f per second above its corridor %.0f' % (sid, real, cap))
         left_ai = ai_fixes(R, pet)
         if left_ai:
             bad.append('soul %s: AI slots shaking the air / wired twice: %s' % (sid, left_ai[:2]))
@@ -1756,7 +1901,9 @@ def check(R, baseR, ledger, log=print):
             continue
         for t_new, t_old in zip(c['tables'], c['orig']):
             for soul_t, pct in c['souls'].items():
-                targets = frozenset(key_of(x) for x in getv(R[soul_t], 'lootName1') or [])
+                # 1.8.2: a pool of many souls (the Tartarus arena chests) - any of its souls counts
+                pool = (c.get('targets') or {}).get(soul_t)
+                targets = frozenset(pool) if pool else frozenset(key_of(x) for x in getv(R[soul_t], 'lootName1') or [])
                 e = orb_odds.per_container(R, t_new, targets)
                 if abs(e - pct / 100.0) > 5e-3:
                     bad.append('chest %s: soul %.4f per opening, want %.4f' % (ck.split(BS)[-1], e, pct / 100.0))

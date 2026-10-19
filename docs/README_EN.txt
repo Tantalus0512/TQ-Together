@@ -97,13 +97,17 @@ Where to get them
     the chance per fight.
   - The gods of Asgard, Ylva, Mimir, Thrym and most Eternal Embers bosses drop nothing themselves - their souls are
     in the boss chest, 15% per opening (SoulChestChance=). Loot dropped in the Tartarus arena vanishes, so the
-    Tartarus soul is in his reward orb as well.
+    Tartarus soul is in his reward orb as well: 15% per orb on the arena's 3rd cycle (the orb's item count grows with
+    the cycle, so less before and more after: on Legendary about 3% / 8% / 15% / 24% / 34% on cycles 1-5).
+  - The ordinary chests of the Tartarus arenas (1.8.2): 10% per opening (SoulTartarusChance=) for the soul of any
+    boss or hero monster, bosses and heroes equally.
   - Electrum orbs: 20% per orb (SoulOrbChance=) for the soul of a random hero monster of the orb's land (Antiquity,
     Hades, Scandia, Atlantis, Jade Emperor, Thebes). Boss souls (1.7.9) come only from the bosses themselves and their
     chests; only those with no loot of their own are left in the orbs (Baldr, the three Chaos bosses, Toxeanubis).
   Everything else drops from monsters with its old chance; orbs and chests hold more items so that the others are as
-  many as in the game on average (Tartarus' reward orb has no item count to raise: in 15% of openings a soul shard
-  takes the place of its item). Shards of one soul drop on every difficulty and stack together.
+  many as in the game on average. Where no item can be added, a shard takes an item's place: in Tartarus' reward orb
+  (8% fewer purple items) and in the common chests of his arenas (20% fewer potions). Shards of one soul drop on
+  every difficulty and stack together.
 
 The soul in battle
   - it is the boss itself with its own skills and AI, but a pet: the pet panel, stances, dismiss; no boss music,
@@ -118,8 +122,9 @@ The soul in battle
   - damage (1.7.1) follows your hero: the average boss soul's basic attack deals SoulDamage= % (30) of the hero's
     damage per second from the character window, the soul's skills grow by the same factor, and every soul keeps
     its rank among the bosses. The hardest hitters are held: a boss at most 1.5 times the average soul (about 45%
-    of the hero's damage), a hero monster at most the average. Bosses with a weak hand (Arachne) fight with poison
-    and skills. Creatures a soul summons itself (Arachne's spiders) are not raised. SoulDamage=0 = the boss's own
+    of the hero's damage), a hero monster at most the average. Souls that fight with a weapon (swords, bows - 91
+    souls) are measured by their weapon (1.8.3). Bosses with a weak hand (Arachne) fight with poison and skills.
+    Creatures a soul summons itself (Arachne's spiders) are not raised. SoulDamage=0 = the boss's own
     damage;
   - big bosses are shrunk to 1.3 (SoulMaxScale=) to fit through doors; a soul leaves no boss chest when it dies,
     its body dissolves like an eidolon's (1.7.6);
