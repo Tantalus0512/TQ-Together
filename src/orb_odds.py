@@ -4,7 +4,7 @@
 difficulty / level index); SelectLootNumber 0x10181da0 draws the number of items from numSpawnMin/MaxEquation
 (numberOfPlayers); SelectLoot 0x10181530 picks, for EACH item, one slot with probability lootNChance / (sum of the six
 chances) - a running total, not 100 - then a weighted pick inside the slot. Nested LootMasterTable / FixedWeight tables
-are weighted picks. (Before 1.5.0 this model counted one item per orb; an orb gives 7-8.)
+are weighted picks. (Before 1.5.0 this model counted one item per orb; an orb gives 8-9.)
   py -3 orb_odds.py [build|vanilla] [record substring]"""
 import sys, re, functools
 sys.path.insert(0, r'D:\TQMod\tools')
@@ -47,7 +47,8 @@ def past_slot_max(f):
 
 def kept_share(R, f, n, x):
     """chance x the weight share of table x in slot n - x itself, or x inside one of our wrapper tables (1.7.8: when a
-    slot had no free entry, ours went in together with one vanilla entry): what every vanilla entry must keep"""
+    slot had no free entry, ours went in together with one vanilla entry). Not normalised by the six chances: compare
+    entries through entry_rate (1.8.1)"""
     ch = float((f.get('loot%dChance' % n) or [0])[0])
     pairs = slot_pairs(f, n)
     W = sum(w for _, w in pairs)
@@ -106,20 +107,60 @@ def odds(R, targets):
     return p
 
 
-def spawn_counts(f):
-    """FixedItemController::SelectLootNumber: the item count lies between the two equations (one player)"""
-    def ev(name, d):
-        e = (f.get(name) or [''])[0]
-        if not e:
-            return d
-        try:
-            return float(eval(e.replace('^', '**'), {'__builtins__': {}}, {'numberOfPlayers': 1}))
-        except Exception:
-            return d
-    lo = ev('numSpawnMinEquation', 1.0)
-    hi = ev('numSpawnMaxEquation', lo)
-    lo, hi = int(min(lo, hi)), int(max(lo, hi))
-    return list(range(max(1, lo), max(1, hi) + 1))
+def eval_count(e, players=1):
+    """value of a numSpawn equation, or None"""
+    if not e:
+        return None
+    try:
+        return float(eval(e.replace('^', '**'), {'__builtins__': {}}, {'numberOfPlayers': players}))
+    except Exception:
+        return None
+
+
+def engine_round(x):
+    """SelectLootNumber 0x10181fb5..0x10181fc9: max(0, value) + 0.5, truncated - the equations are ROUNDED (1.8.1;
+    before, this model truncated them: an electrum orb's 7.82-8.74 counted as 7-8 items, the game gives 8-9)"""
+    return int(max(0.0, x) + 0.5)
+
+
+def spawn_counts(f, players=1):
+    """FixedItemController::SelectLootNumber: the item count is drawn between the two rounded equations. A table with
+    no equations (FixedItemLootTartarus: its class picks the count itself) counts as one item"""
+    lo = eval_count((f.get('numSpawnMinEquation') or [''])[0], players)
+    hi = eval_count((f.get('numSpawnMaxEquation') or [''])[0], players)
+    if lo is None and hi is None:
+        return [1]
+    lo = engine_round(lo if lo is not None else hi)
+    hi = engine_round(hi if hi is not None else lo)
+    lo, hi = min(lo, hi), max(lo, hi)
+    return list(range(lo, hi + 1))
+
+
+def mean_count(f):
+    ns = spawn_counts(f)
+    return sum(ns) / float(len(ns))
+
+
+def entry_rate(R, f, n, x):
+    """expected number of vanilla entry x (directly in slot n, or inside our wrapper table there) that ONE opening
+    gives: items per opening x slot chance / running total of the six chances x weight share (1.8.1: what a vanilla
+    entry keeps or loses - the slot chance alone says nothing, the engine normalises by the total)"""
+    total = sum(float((f.get('loot%dChance' % s) or [0])[0] or 0) for s in range(1, 7))
+    if total <= 0:
+        return 0.0
+    return mean_count(f) * kept_share(R, f, n, x) / total
+
+
+def vanilla_factors(R, f, oR, of):
+    """{(slot, entry): new rate / vanilla rate} for every vanilla entry of a loot table we changed (f) against the
+    table as it was (of, read from oR)"""
+    out = {}
+    for s_ in range(1, 7):
+        for x, _w in slot_pairs(of, s_):
+            old = entry_rate(oR, of, s_, x)
+            if old > 0:
+                out[(s_, x)] = entry_rate(R, f, s_, x) / old
+    return out
 
 
 def per_container(R, table, targets, p=None):

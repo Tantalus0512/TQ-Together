@@ -44,8 +44,9 @@ Where to get them
     and monsters give nothing.
   The shard belongs to a random one of your level-20+ heroes (all equally likely, the one you play included). The
   more such heroes you have, the more it takes to collect two shards of one particular hero.
-  Nothing else in the orbs and chests changes - every other item keeps its original chance. Merchants do not sell
-  eidolons.
+  Every item of an orb is a draw of its own and a shard takes the place of one of them, so orbs and chests with
+  shards hold just enough more items that the others are as many as in the game on average (1.8.1: an orb gives 8-10
+  items, the others x0.97; boss chests x0.97-1.02). Monsters' loot does not change. Merchants do not sell eidolons.
 
 The companion
   - has your hero's body, colours, worn gear, level, attributes and skills;
@@ -100,7 +101,9 @@ Where to get them
   - Electrum orbs: 20% per orb (SoulOrbChance=) for the soul of a random hero monster of the orb's land (Antiquity,
     Hades, Scandia, Atlantis, Jade Emperor, Thebes). Boss souls (1.7.9) come only from the bosses themselves and their
     chests; only those with no loot of their own are left in the orbs (Baldr, the three Chaos bosses, Toxeanubis).
-  Every other item keeps its chance. Shards of one soul drop on every difficulty and stack together.
+  Everything else drops from monsters with its old chance; orbs and chests hold more items so that the others are as
+  many as in the game on average (Tartarus' reward orb has no item count to raise: in 15% of openings a soul shard
+  takes the place of its item). Shards of one soul drop on every difficulty and stack together.
 
 The soul in battle
   - it is the boss itself with its own skills and AI, but a pet: the pet panel, stances, dismiss; no boss music,
@@ -141,8 +144,9 @@ The soul in battle
 
 EPIC / LEGENDARY RINGS
 ----------------------
-The game does not allow relics in Epic or Legendary (purple) items. Eidolons follow the same rule.
-If you want them in purple rings, use a separate mod that lifts this restriction for all relics
+The game does not allow relics in Epic or Legendary (purple) items. Eidolons and enslaved souls follow the same
+rule (a soul needs an ordinary, not a purple, amulet). If you want them in purple rings and amulets, use a separate
+mod that lifts this restriction for all relics
 (for example "Enchanting for Epic and Legendary Items" on Nexus). It is not part of TQ Together and not required.
 
 

@@ -34,10 +34,50 @@ def write_log():
 
 
 def pause(msg='Press Enter to close / Нажмите Enter, чтобы закрыть'):
+    """-> False when nobody can answer (no console input)"""
     try:
         input('\n' + msg)
+        return True
     except Exception:
+        return False
+
+
+def to_number(v):
+    """an ini value as a number: as Python reads it ('.65', '1e3', decimal comma), else the number it starts with
+    ('2 ; two players'); None if there is none (1.8.1)"""
+    import math
+    v = (v or '').strip()
+    try:
+        x = float(v.replace(',', '.'))
+        return x if math.isfinite(x) else None
+    except ValueError:
         pass
+    m = re.match(r'[-+]?(?:\d+(?:[.,]\d*)?|[.,]\d+)', v)
+    return float(m.group(0).replace(',', '.')) if m else None
+
+
+def remember_game(folder, d):
+    """GamePath=d in folder's TQTogether.ini. 1.8.1: every other line stays (the file was rewritten with GamePath
+    alone, and Difficulty, Life.<hero> and the soul settings were gone)"""
+    p = os.path.join(folder, 'TQTogether.ini')
+    lines = []
+    if os.path.exists(p):
+        with open(p, encoding='utf-8-sig', errors='replace') as f:
+            lines = f.read().splitlines()
+    out, done = [], False
+    for line in lines:
+        if not line.strip().startswith((';', '#')) and line.split('=', 1)[0].strip().lower() == 'gamepath':
+            if not done:
+                out.append('GamePath=%s' % d)
+                done = True
+            continue
+        out.append(line)
+    if not done:
+        out = (out or ['; TQ Together settings']) + ['GamePath=%s' % d]
+    tmp = p + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(out) + '\n')
+    os.replace(tmp, p)
 
 
 def ask_game():
@@ -53,8 +93,7 @@ def ask_game():
         if paths.is_game(d):
             for folder in (paths.app_dir(), paths.data_dir()):
                 try:
-                    with open(os.path.join(folder, 'TQTogether.ini'), 'w', encoding='utf-8') as f:
-                        f.write('; TQ Together settings\nGamePath=%s\n' % d)
+                    remember_game(folder, d)
                     break
                 except OSError:
                     continue
@@ -89,10 +128,25 @@ def choose_hero(args, base_arz=None):
     import build_companions as B
     st = paths.settings()
     lives = {k[len('life.'):]: v for k, v in st.items() if k.startswith('life.')}
-    num = lambda k, d: float((st.get(k) or str(d)).replace(',', '.'))
-    mode = (st.get('difficulty') or '').strip().lower()
+
+    def num(k, d):
+        """1.8.1: the number at the start of the value ('2 ; two players', decimal comma); anything else is the default
+        with a note - a stray word stopped TQ Together with a traceback"""
+        v = (st.get(k) or '').strip()
+        if not v:
+            return float(d)
+        x = to_number(v)
+        if x is None:
+            log('  ! TQTogether.ini: %s=%s is not a number - using %g' % (k, v, d))
+            return float(d)
+        return x
+    raw_mode = (st.get('difficulty') or '').strip().lower()
+    mode = raw_mode.split(';')[0].split()[0] if raw_mode.split(';')[0].split() else ''
     if mode not in ('party', 'power', 'off'):
-        mode = 'power' if st.get('autolife', '0').strip() not in ('', '0') or lives else 'party'
+        if mode:
+            log('  ! TQTogether.ini: Difficulty=%s is not party, power or off' % st.get('difficulty'))
+        auto = st.get('autolife', '0').strip().lower().split(';')[0].strip()
+        mode = 'power' if auto not in ('', '0', '0.0', 'off', 'false', 'no') or lives else 'party'
     heroes = []
     saves = paths.saves_dir()
     for d in os.listdir(saves) if os.path.isdir(saves) else []:
@@ -102,7 +156,9 @@ def choose_hero(args, base_arz=None):
     heroes.sort(reverse=True)
     paths_of = {h: p for _, h, p in heroes}
     heroes = [h for _, h, _ in heroes]
-    if not heroes:
+    if not heroes:      # 1.8.1: said, not silent (a wrong Windows account or Documents folder shows up here)
+        log('No characters in %s - companions and souls come once you have heroes there.' % saves)
+        log('В %s нет персонажей - соратники появятся, когда там будут герои.' % saves)
         return
     _, folders = B.load_registry()
     folder_of = {c: f for f, c in folders.items()}
@@ -151,14 +207,18 @@ def choose_hero(args, base_arz=None):
                     measured[p] = 0
             return measured[p]
         base, power, cap = num('autolifebase', 960), num('autolifepower', 0.65), num('autolifemax', 50)
+        if base <= 0:           # 1.8.1: 0 divided, a negative base gave a complex number
+            log('  ! TQTogether.ini: AutoLifeBase must be above 0 - using 960')
+            base = 960.0
 
         def life(h):
             try:
                 if h.lower() in lives:
-                    return max(0.1, float(lives[h.lower()].replace(',', '.')))
+                    x = to_number(lives[h.lower()])
+                    return max(0.1, x) if x is not None else 1.0
                 dmg = sum(dps(p) for _, p in members(h))
                 return round(min(cap, max(1.0, (dmg / base) ** power)), 1) if dmg > 0 else 1.0
-            except (ValueError, OSError):
+            except (ValueError, OSError, ZeroDivisionError, OverflowError):
                 pass
             return 1.0
         show = lambda h: '%s -> monster life on Legendary x%g / здоровье монстров на Легенде x%g%s' % (
@@ -216,15 +276,20 @@ def single_instance():
     import msvcrt
     try:
         f = open(os.path.join(paths.data_dir(), 'tq_together.lock'), 'a+')
+    except OSError as e:        # 1.8.1: not "already running" - the data folder is not writable
+        raise SystemExit('Cannot write into %s (%s).\nНет доступа на запись в эту папку (антивирус, OneDrive, права).'
+                         % (paths.data_dir(), e))
+    try:
         msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
         return f
     except OSError:
+        f.close()
         return None
 
 
 def cleanup_old_cache():
     """1.0 dev builds kept a 365 MB pickle of the whole database - not used any more"""
-    for p in glob.glob(os.path.join(paths.data_dir(), 'cache', 'base_*.pickle')):
+    for p in glob.glob(os.path.join(glob.escape(paths.data_dir()), 'cache', 'base_*.pickle')):
         try:
             os.remove(p)
         except OSError:
@@ -243,7 +308,19 @@ def launch(game):
 def main():
     args = set(a.lower() for a in sys.argv[1:])
     log('%s %s' % (paths.APP, paths.VERSION))
-    game = paths.find_game() or ask_game()
+    game = paths.find_game()
+    if game and paths.STALE_GAMEPATH:       # 1.8.1: the search found it - the ini gets the new path, once
+        for folder in (paths.app_dir(), paths.data_dir()):
+            p = os.path.join(folder, 'TQTogether.ini')
+            try:
+                if os.path.exists(p) and re.search(r'(?im)^\s*gamepath\s*=', open(p, encoding='utf-8-sig',
+                                                                                   errors='replace').read()):
+                    remember_game(folder, game)
+            except OSError:
+                pass
+        log('  TQTogether.ini: GamePath=%s held no game - now %s / путь к игре в ini обновлён' % (
+            paths.STALE_GAMEPATH, game))
+    game = game or ask_game()
     if not game:
         raise SystemExit('Game folder not set / Папка игры не задана.')
     if not paths.has_dlc(game):
@@ -258,7 +335,8 @@ def main():
     import installer
     while installer.game_running():
         log('Titan Quest is running - close it first. / Titan Quest запущен - закройте его.')
-        pause('Press Enter when the game is closed / Нажмите Enter, когда игра закрыта')
+        if not pause('Press Enter when the game is closed / Нажмите Enter, когда игра закрыта'):
+            raise SystemExit('Close Titan Quest and start TQ Together again. / Закройте игру и запустите TQ Together снова.')
 
     inst = installer.Installer(game, log)
     if '--uninstall' in args:
@@ -269,11 +347,17 @@ def main():
         except EOFError:
             ok = False
         if ok:
-            inst.uninstall()
+            left = inst.uninstall()
             import shutil
             shutil.rmtree(os.path.join(paths.data_dir(), 'cache'), ignore_errors=True)
             shutil.rmtree(os.path.join(paths.data_dir(), 'build'), ignore_errors=True)
-            log('Done. TQ Together is removed. / Готово, мод удалён.')
+            if left:            # 1.8.1: no saved original to put back - not "removed"
+                log('These game files still hold TQ Together and their saved originals are gone: %s' % ', '.join(left))
+                log('Restore them: Steam - Properties > Installed Files > Verify integrity; GOG Galaxy - Verify / Repair.')
+                log('В этих файлах игры остался мод, а сохранённых оригиналов нет: %s.' % ', '.join(left))
+                log('Верните их проверкой целостности файлов в Steam (или GOG Galaxy).')
+            else:
+                log('Done. TQ Together is removed. / Готово, мод удалён.')
         else:
             log('Cancelled. / Отменено.')
         pause()
@@ -283,7 +367,9 @@ def main():
     base = inst.prepare()
     choose_hero(args, base)
     fp = fingerprint(base)
-    if '--rebuild' not in args and inst.state.get('fingerprint') == fp and inst.installed_intact():
+    # 1.8.1: texts that failed to go in last time for want of ArchiveTool are tried again once it is there
+    texts_ok = not (inst.state.get('texts_no_tool') and os.path.exists(inst.tool))
+    if '--rebuild' not in args and inst.state.get('fingerprint') == fp and inst.installed_intact() and texts_ok:
         log('Nothing changed since the last start - companions are up to date. / Изменений нет, соратники актуальны.')
     else:
         log('Building companions from your saves - please do not close this window ...')

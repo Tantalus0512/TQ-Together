@@ -24,7 +24,7 @@ def tweaks_dir():
 
 
 def files(folder=None):
-    return sorted(glob.glob(os.path.join(folder or tweaks_dir(), '*.json')))
+    return sorted(glob.glob(os.path.join(glob.escape(folder or tweaks_dir()), '*.json')))   # 1.8.1: [ ] in a path
 
 
 def fingerprint(folder=None):
@@ -62,42 +62,53 @@ def apply(db, log=print, folder=None):
                 t = json.load(f)
         except ValueError as e:
             raise TweakError('%s: not valid JSON (%s)' % (os.path.basename(p), e))
+        if not isinstance(t, dict) or not isinstance(t.get('ops', []), list):
+            raise TweakError('%s: want {"name": ..., "ops": [...]}' % os.path.basename(p))
         name = t.get('name') or os.path.basename(p)
         for i, op in enumerate(t.get('ops', []), 1):
             where = '%s op %d' % (os.path.basename(p), i)
-            kind = op.get('op')
-            if kind == 'clone':
-                src, dst = _key(op['from']), _key(op['to'])
-                if dst.startswith(RESERVED):
-                    raise TweakError('%s: %s is reserved for TQ Together' % (where, dst))
-                if R.get(src) is None:
-                    raise TweakError('%s: source record %s does not exist' % (where, src))
-                if R.get(dst) is not None:
-                    raise TweakError('%s: %s already exists' % (where, dst))
-                db.clone(src, dst)
-                touched.add(dst)
-            elif kind in ('set', 'del'):
-                k = _key(op['record'])
-                if k.startswith(RESERVED):
-                    raise TweakError('%s: %s is reserved for TQ Together' % (where, k))
-                r = R.get(k)
-                if r is None:
-                    raise TweakError('%s: record %s does not exist' % (where, k))
-                fl = op['field'].lower()
-                keep = [v for v in r['vars'] if v[0].lower() != fl]
-                if kind == 'set':
-                    if op.get('type') not in TYPES:
-                        raise TweakError('%s: type must be one of %s' % (where, ', '.join(TYPES)))
-                    vt = TYPES[op['type']]
-                    vals = op['values'] if isinstance(op['values'], list) else [op['values']]
-                    old = [v for v in r['vars'] if v[0].lower() == fl]
-                    keep.append((old[0][0] if old else op['field'], vt, [_cast(v, vt) for v in vals]))
-                r['vars'] = keep
-                R[k] = r
-                db.mark(k)
-                touched.add(k)
-            else:
-                raise TweakError('%s: unknown op %r' % (where, kind))
+            try:
+                _apply_op(db, R, op, where, touched)
+            except TweakError:
+                raise
+            except (KeyError, ValueError, TypeError, AttributeError) as e:    # 1.8.1: a missing key, "true" as int
+                raise TweakError('%s: %s %r' % (where, type(e).__name__, e))
         done.append((name, os.path.basename(p), len(t.get('ops', []))))
         log('  tweak: %s (%s, %d changes)' % (name, os.path.basename(p), len(t.get('ops', []))))
     return touched, done
+
+
+def _apply_op(db, R, op, where, touched):
+    kind = op.get('op')
+    if kind == 'clone':
+        src, dst = _key(op['from']), _key(op['to'])
+        if dst.startswith(RESERVED):
+            raise TweakError('%s: %s is reserved for TQ Together' % (where, dst))
+        if R.get(src) is None:
+            raise TweakError('%s: source record %s does not exist' % (where, src))
+        if R.get(dst) is not None:
+            raise TweakError('%s: %s already exists' % (where, dst))
+        db.clone(src, dst)
+        touched.add(dst)
+    elif kind in ('set', 'del'):
+        k = _key(op['record'])
+        if k.startswith(RESERVED):
+            raise TweakError('%s: %s is reserved for TQ Together' % (where, k))
+        r = R.get(k)
+        if r is None:
+            raise TweakError('%s: record %s does not exist' % (where, k))
+        fl = op['field'].lower()
+        keep = [v for v in r['vars'] if v[0].lower() != fl]
+        if kind == 'set':
+            if op.get('type') not in TYPES:
+                raise TweakError('%s: type must be one of %s' % (where, ', '.join(TYPES)))
+            vt = TYPES[op['type']]
+            vals = op['values'] if isinstance(op['values'], list) else [op['values']]
+            old = [v for v in r['vars'] if v[0].lower() == fl]
+            keep.append((old[0][0] if old else op['field'], vt, [_cast(v, vt) for v in vals]))
+        r['vars'] = keep
+        R[k] = r
+        db.mark(k)
+        touched.add(k)
+    else:
+        raise TweakError('%s: unknown op %r' % (where, kind))

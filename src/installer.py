@@ -50,10 +50,24 @@ def is_arc(f):
         return False
 
 
+def arc_intact(f):
+    """1.8.1: the archive's table of contents lies inside the file (a cut-off copy fails; the magic and the size alone
+    passed a half-written archive)"""
+    try:
+        import struct
+        size = os.path.getsize(f)
+        with open(f, 'rb') as h:
+            magic, ver, nfiles, nparts, parts_sz, names_sz, toc_off = struct.unpack('<4s6I', h.read(28))
+        return magic == b'ARC\x00' and nfiles > 0 and 28 <= toc_off and \
+            toc_off + parts_sz + names_sz + nfiles * 44 <= size
+    except Exception:
+        return False
+
+
 def valid_file(f):
     """a half-written copy must never become the base"""
     if is_arc(f):
-        return os.path.getsize(f) > 4096
+        return os.path.getsize(f) > 4096 and arc_intact(f)
     from arz_lazy import valid_arz
     return valid_arz(f)
 
@@ -86,14 +100,31 @@ class Installer(object):
         # one state per game folder: a Steam and a GOG copy on the same PC never mix their md5s
         tag = hashlib.md5(os.path.normcase(os.path.normpath(game)).encode('utf-8')).hexdigest()[:8]
         self.state_path = os.path.join(paths.data_dir(), 'install_state_%s.json' % tag)
-        self.state = json.load(open(self.state_path, encoding='utf-8')) if os.path.exists(self.state_path) else {}
+        self.state = self._load_state()
         self.arz = os.path.join(game, 'Database', 'database.arz')
-        self.texts = sorted(glob.glob(os.path.join(game, 'Text', 'Text_*.arc')))
+        self.texts = sorted(glob.glob(os.path.join(glob.escape(game), 'Text', 'Text_*.arc')))   # 1.8.1: "... [GOG]"
         self.tool = os.path.join(game, 'ArchiveTool.exe')
 
+    def _load_state(self):
+        """1.8.1: an unreadable state (cut off by a crash) is a lost state - every game file is judged by its content
+        then (test_lifecycle step 4) - instead of stopping every start and the uninstall with a traceback"""
+        if not os.path.exists(self.state_path):
+            return {}
+        try:
+            with open(self.state_path, encoding='utf-8') as f:
+                s = json.load(f)
+            if isinstance(s, dict):
+                return s
+        except (ValueError, OSError):
+            pass
+        self.log('  ! %s was unreadable - starting from the game files themselves' % os.path.basename(self.state_path))
+        return {}
+
     def save_state(self):
-        with open(self.state_path, 'w', encoding='utf-8') as f:
+        tmp = self.state_path + '.tmp'          # 1.8.1: written aside, then swapped in one step
+        with open(tmp, 'w', encoding='utf-8') as f:
             json.dump(self.state, f, indent=1)
+        os.replace(tmp, self.state_path)
 
     def files(self):
         return [self.arz] + self.texts
@@ -170,7 +201,8 @@ class Installer(object):
                         self.log('  ! %s looks damaged - keeping the saved original' % name)
                 # the base itself must be clean; checked once per base version
                 mb = md5(b)
-                if clean.get(name) != mb:
+                # 1.8.1: an archive is judged clean only when ArchiveTool can look inside (without it ours() says no)
+                if clean.get(name) != mb and (not is_arc(b) or os.path.exists(self.tool)):
                     if self.ours(b):
                         self._heal_base(f, b, name)
                         mb = md5(b)
@@ -207,12 +239,15 @@ class Installer(object):
         except PermissionError:
             raise SystemExit(no_write_access(self.game))
         work_root = os.path.join(paths.data_dir(), 'text_work')
-        n = 0
+        n = want = 0
         for arc in self.texts:
             lang = os.path.basename(arc)[5:-4].upper()
             add = text_ru if lang == 'RU' else text_en
             safe_copy(self.base(arc), arc)          # always from the pristine archive: tags never stack up
-            if not add or not os.path.exists(self.tool) or not is_arc(arc):
+            if not add:
+                continue
+            want += 1
+            if not os.path.exists(self.tool) or not is_arc(arc):
                 continue
             work = os.path.join(work_root, lang)
             shutil.rmtree(work, ignore_errors=True)
@@ -228,20 +263,38 @@ class Installer(object):
             merged = base.rstrip('\r\n') + '\r\n' + TEXT_MARK + '\r\n' + add
             with open(host, 'wb') as f:
                 f.write(b'\xff\xfe' + merged.encode('utf-16-le'))
-            self._run([short_path(self.tool), short_path(arc), '-replace', TEXT_HOST, '.', '9'], cwd=short_path(work))
-            listing = subprocess.run([short_path(self.tool), short_path(arc), '-list'], capture_output=True, text=True,
-                                     creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)).stdout
-            if any(':' in l or l.startswith('/') for l in listing.splitlines()):
-                safe_copy(self.base(arc), arc)
-                self.log('  ! %s: ArchiveTool wrote absolute paths - restored the original' % os.path.basename(arc))
+            # 1.8.1: ArchiveTool rewrites the archive in place - it works on a copy in our data folder, and the game
+            # file is swapped in one step (a closed window or a power cut in the middle left a cut-off Text_XX.arc
+            # in the game, and the next start took it for the game's own new version)
+            staged_dir = os.path.join(work_root, lang + '_arc')
+            os.makedirs(staged_dir, exist_ok=True)
+            staged = os.path.join(staged_dir, os.path.basename(arc))
+            shutil.copy2(self.base(arc), staged)
+            if not self._run([short_path(self.tool), short_path(staged), '-replace', TEXT_HOST, '.', '9'],
+                             cwd=short_path(work)) or md5(staged) == md5(self.base(arc)):
+                self.log('  ! %s: ArchiveTool did not add our texts - kept the original' % os.path.basename(arc))
                 continue
+            listing = subprocess.run([short_path(self.tool), short_path(staged), '-list'], capture_output=True,
+                                     text=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)).stdout
+            if any(':' in l or l.startswith('/') for l in listing.splitlines()):
+                self.log('  ! %s: ArchiveTool wrote absolute paths - kept the original' % os.path.basename(arc))
+                continue
+            if not (is_arc(staged) and arc_intact(staged)):
+                self.log('  ! %s: ArchiveTool left a broken archive - kept the original' % os.path.basename(arc))
+                continue
+            safe_copy(staged, arc)
             n += 1
         shutil.rmtree(work_root, ignore_errors=True)
         if not os.path.exists(self.tool):
             self.log('  ! ArchiveTool.exe not found in the game folder - item names will show as tags')
         self.state['installed'] = {os.path.basename(f): md5(f) for f in self.files()}
+        # 1.8.1: texts that did not go in for want of ArchiveTool are tried again once it is back (they were taken as
+        # installed for good); a failure with the tool there is not retried on every start (--rebuild does)
+        self.state['texts_ok'] = n >= want
+        self.state['texts_no_tool'] = n < want and not os.path.exists(self.tool)
         self.save_state()
-        self.log('  installed (texts in %d languages)' % n)
+        self.log('  installed (texts in %d languages%s)' % (n, '' if n >= want else ', %d failed' % (want - n)))
+        return n >= want
 
     def _run(self, args, cwd=None):
         r = subprocess.run(args, cwd=cwd, capture_output=True, text=True,
@@ -252,25 +305,39 @@ class Installer(object):
 
     # -------------------------------------------------------------- uninstall
     def uninstall(self):
-        """put the originals back - but never over a file the game (an update, Verify) replaced after our install"""
+        """put the originals back - but never over a file the game (an update, Verify) replaced after our install.
+        -> list of game files that still hold our data and could not be restored (empty = clean)"""
         n = 0
+        inst = self.state.get('installed', {})
+        left = []
         for f in self.files():
             b = self.base(f)
+            name = os.path.basename(f)
             if not os.path.exists(b):
+                # 1.8.1: no saved original (deleted by hand) - say so instead of "removed"
+                if os.path.exists(f) and (md5(f) == inst.get(name) or (not is_arc(f) and has_our_records(f))):
+                    left.append(name)
                 continue
             # by content: a file with our records/texts goes back to the original, anything else (a game update
-            # after our install) stays as it is
-            keep_live = os.path.exists(f) and not self.ours(f)
-            if not keep_live:
+            # after our install) stays as it is. 1.8.1: exactly what we installed is ours without asking ArchiveTool;
+            # an archive it cannot read (the tool is gone) keeps its saved original
+            ours = os.path.exists(f) and (md5(f) == inst.get(name) or self.ours(f))
+            if not ours and os.path.exists(f) and is_arc(f) and not os.path.exists(self.tool):
+                self.log('  ! %s: ArchiveTool.exe is missing, cannot tell if it holds our texts - kept %s' % (
+                    name, os.path.basename(b)))
+                continue
+            if ours or not os.path.exists(f):
                 safe_copy(b, f)
                 n += 1
             os.remove(b)
         self.state.pop('installed', None)
         self.state.pop('fingerprint', None)
         self.state.pop('clean_bases', None)
+        self.state.pop('texts_ok', None)
+        self.state.pop('texts_no_tool', None)
         self.save_state()
         self.log('  restored %d original files' % n)
-        return n
+        return left
 
 
 def game_running():

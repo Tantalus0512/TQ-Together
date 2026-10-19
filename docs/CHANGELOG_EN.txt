@@ -1,6 +1,33 @@
 TQ Together - changelog
 =======================
 
+1.8.1
+- Orbs and chests give their vanilla loot again. Every item of an orb is a draw of its own, so a shard took the place
+  of a vanilla item: electrum orbs gave 9.5% less of everything else, the Aesir chests 7-10%. Now they hold just
+  enough more items that the vanilla ones are as many as in the game on average: an orb gives 8-10 items instead of
+  8-9 (vanilla x0.97), the Aesir chests x1.00. The game rounds the item count, so the chests of Thrym, Mimir and Loki
+  keep a 2-3% difference. Tartarus' reward orb has no item count to raise: a soul shard still takes the place of its
+  item in 15% of openings.
+- The per-fight soul chance is counted for each fight. The Exhumed Medjai (three level bands that the developers all
+  gave level 72) dropped his soul at 5.3% instead of 15%, the blueprint keeper bandit and the lone Azghar Ha'kor at
+  6.2% instead of 12%, Ssaquath and the high priest (two different quests) at 6.2% too. Hades' and Charon's forms,
+  Tiamat's stages and the four honor guards still count as one fight.
+- Fixed: an item named twice in one loot slot keeps its chance (the Medjai's and four other monsters' health potion
+  dropped at 1% instead of 5%).
+- The item count of orbs and chests is now worked out as the game does it (rounded, not cut off), so the shard
+  chances are exactly the ones set.
+- Safer install:
+  - texts are put together in a copy of the archive and swapped into the game in one step - a window closed in the
+    middle no longer leaves a cut-off Text_XX.arc in the game;
+  - a damaged install state file stops neither a start nor the uninstall;
+  - a stale GamePath in TQTogether.ini: the game is searched for; a path typed in is added to the ini, the other
+    settings stay;
+  - a game or Documents folder with square brackets in its name ("... [GOG]") no longer breaks the texts;
+  - texts that did not go in (no ArchiveTool.exe) are tried again on the next start instead of "nothing changed";
+  - an uninstall without the saved originals says which files to restore with Steam's "Verify integrity";
+  - a typo in a number in TQTogether.ini gives a warning and the default instead of a crash; a broken tweak names
+    its file and operation.
+
 1.8.0
 - A soul from an electrum orb: 20% per orb instead of 10% (SoulOrbChance=20) - about 4 shards in 20 orbs on average,
   and nothing at all about once in 100 (was 2 shards and 12%).

@@ -65,7 +65,7 @@ def base_summary(base_arz):
     out = {'vt_of': {k: dict(c) for k, c in vt_of.items()}, 'orb_loot': orb_loot, 'broken_in_game': refs - names}
     os.makedirs(os.path.dirname(cache), exist_ok=True)
     import glob
-    for old in glob.glob(os.path.join(os.path.dirname(cache), 'summary*.pickle')):    # only the current base counts
+    for old in glob.glob(os.path.join(glob.escape(os.path.dirname(cache)), 'summary*.pickle')):   # only the current base
         try:
             os.remove(old)
         except OSError:
@@ -475,22 +475,27 @@ def check(build, base_arz, log=print, touched=(), gear=None, souls=None):
     po = orb_odds.odds(R, live_rel)
     orb_pct, boss_pct = B.drop_chances()
 
-    def kept(name, nf, of):
-        # 1.7.8: six entries a slot, as the engine reads them; a vanilla entry may sit inside our wrapper table
+    import souls as S
+
+    planned = (souls or {}).get('loot_counts') or {}
+
+    def kept(name, t, nf, of):
+        # 1.7.8: six entries a slot, as the engine reads them; a vanilla entry may sit inside our wrapper table.
+        # 1.8.1: every vanilla entry keeps its expected number per opening x the same factor, the one the build
+        # planned (the count equations make up for the items our shards take)
         for n_, j_ in orb_odds.past_slot_max(nf):
             bad.append('%s slot %d: entry %d past the six the game reads' % (name, n_, j_))
-        for s_ in range(1, 7):
-            for x, _w in orb_odds.slot_pairs(of, s_):
-                pn, po_ = orb_odds.kept_share(R, nf, s_, x), orb_odds.kept_share(vanR, of, s_, x)
-                if abs(pn - po_) > 1e-6:
-                    bad.append('%s slot %d: vanilla entry %s odds %.6f -> %.6f' % (name, s_, x.split(BS)[-1], po_, pn))
+        bad.extend(S.vanilla_kept(name, R, nf, vanR, of, planned.get(key(t), {}).get('vanilla')))
     for name, price, t in orb_odds.orbs(R):
         e = orb_odds.per_container(R, t, live_rel, po)
         want = orb_pct / 100.0 if live_rel else 0.0
         if abs(e - want) > 5e-3:
             bad.append('orb %s: eidolon shard per orb %.4f, want %.4f' % (name, e, want))
-        kept('orb ' + name, orb_odds.fields(R[t]), orb_odds.fields(vanR[t]))
-    log('orbs: %g%% eidolon shard per orb on every difficulty, vanilla entries unchanged' % orb_pct)
+        kept('orb ' + name, t, orb_odds.fields(R[t]), orb_odds.fields(vanR[t]))
+    seen = S.VANILLA_SEEN[:]
+    del S.VANILLA_SEEN[:], S.VANILLA_FAR[:]
+    log('orbs: %g%% eidolon shard per orb on every difficulty, vanilla items per orb %s' % (
+        orb_pct, 'x%.3f..x%.3f' % (min(seen), max(seen)) if seen else 'unchanged'))
     # 7i. bosses (1.5.1): every Boss monster that drops loot itself carries the shard table in ONE Misc slot with
     #     EidolonBossChance %, and every other Misc field is exactly the original's (its own loot unchanged)
     baseR = _LA.load(base_arz).records

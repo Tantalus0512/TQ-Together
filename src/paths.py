@@ -4,7 +4,7 @@ Works the same from the scripts and from the packed TQTogether.exe."""
 import os, sys, re, glob
 
 APP = 'TQ Together'
-VERSION = '1.8.0'
+VERSION = '1.8.1'
 STEAM_APPID = '475150'
 BASE_SUFFIX = '.tqtogether-base'     # untouched copy of every game file we replace
 
@@ -98,6 +98,7 @@ def _steam_game():
 
 
 def _gog_game():
+    found = []
     try:
         import winreg
         base = r'SOFTWARE\WOW6432Node\GOG.com\Games'
@@ -112,10 +113,15 @@ def _gog_game():
                 name = _reg(winreg.HKEY_LOCAL_MACHINE, base + '\\' + sub, 'gameName') or ''
                 path = _reg(winreg.HKEY_LOCAL_MACHINE, base + '\\' + sub, 'path') or ''
                 if 'titan quest' in name.lower() and is_game(path):
-                    return path
+                    found.append(path)
     except Exception:
         pass
-    return None
+    return _best(found)
+
+
+def _best(found):
+    """1.8.1: of several Titan Quest folders the one with Eternal Embers (the classic game sorted first)"""
+    return next((d for d in found if has_dlc(d)), found[0] if found else None)
 
 
 def find_game():
@@ -123,11 +129,18 @@ def find_game():
     return os.path.normpath(d) if d else None
 
 
+STALE_GAMEPATH = None    # 1.8.1: GamePath of the ini that holds no game (the launcher says so)
+
+
 def _find_game():
-    """-> game folder or None. Order: TQTogether.ini, the exe's own folder / its parent, Steam, GOG, usual places"""
+    """-> game folder or None. Order: TQTogether.ini, the exe's own folder / its parent, Steam, GOG, usual places.
+    1.8.1: a GamePath with no game in it (a moved Steam library) falls through to the search instead of asking"""
+    global STALE_GAMEPATH
     s = settings().get('gamepath')
     if s:
-        return s if is_game(s) else None
+        if is_game(s):
+            return s
+        STALE_GAMEPATH = s
     here = app_dir()
     for d in (here, os.path.dirname(here)):
         if is_game(d):
@@ -144,9 +157,9 @@ def _find_game():
                 r'?:\Steam\steamapps\common\Titan Quest Anniversary Edition',
                 r'?:\GOG Games\Titan Quest*', r'?:\Games\Titan Quest*', r'?:\Program Files*\GOG Galaxy\Games\Titan Quest*'):
         for drive in 'CDEFGHIJKLMNOPQRSTUVWXYZ':
-            for d in glob.glob(drive + pat[1:]):
-                if is_game(d):
-                    return d
+            found = [d for d in glob.glob(drive + pat[1:]) if is_game(d)]
+            if found:
+                return _best(found)
     return None
 
 

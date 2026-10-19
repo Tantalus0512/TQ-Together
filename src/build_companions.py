@@ -123,6 +123,9 @@ ORB_CHANCE = 40.0      # 1.5.0: % per electrum orb (one opening) to give one eid
                        # (2 shards = 1 eidolon); TQTogether.ini EidolonOrbChance. Up to 1.4.0 '10' was per ITEM of
                        # an orb, ~38 % per Legendary orb in fact - the default keeps that.
 ORB_TIERS = ('_1n_', '_2e_', '_3l_')   # 1.5.0: Normal, Epic and Legendary orbs (x4_ElectrumOrb_*_<tier>_Loot)
+LOOT_COUNT_MAX = 1.5    # 1.8.1: a container's item count equations are raised by at most this (add_shards)
+VANILLA_KEPT = (0.9, 1.1)   # 1.8.1: expected vanilla items per opening vs the game's, what a container may end up with
+                            # (Tartarus' orb, no count equations: 0.85 - checked against its recorded value instead)
 BOSS_CHANCE = 20.0     # 1.5.1: % per boss kill, dropped by the boss itself; TQTogether.ini EidolonBossChance
                        # (1.5.0 put 10 % into the boss chests instead)
 AGGR_CONTROLLER = dict(FAST_CONTROLLER, MaxPursuitDistance=32.0, TeleportToLeaderDistance=30.0, WanderDistance=7.0)
@@ -435,7 +438,7 @@ def load_base(base_arz):
             pass
     a = Arz.load(base_arz)
     os.makedirs(os.path.dirname(cache), exist_ok=True)
-    for old in glob.glob(os.path.join(os.path.dirname(cache), 'base_*.pickle')):
+    for old in glob.glob(os.path.join(glob.escape(os.path.dirname(cache)), 'base_*.pickle')):
         os.remove(old)
     with open(cache, 'wb') as f:
         pickle.dump(a, f, 4)
@@ -456,6 +459,7 @@ class Builder(object):
         self.known = set(self.registry)
         self.gear_ledger = {}      # pet record -> what its gear was baked from (verify_companions 7i)
         self.soul_ledger = None    # 1.6.0: boss souls built and where they drop (souls.check)
+        self.loot_counts = {}      # 1.8.1: loot table -> item count raised by k so vanilla items keep their number
         self.hero_run = {}         # 1.7.0: hero name -> run speed bonus % from gear and passives within the cap (souls)
         self.hero_speed = {}       # 1.7.5: hero name -> {'Attack'|'SpellCast'|'Run': bonus %} the same way (souls)
 
@@ -1650,17 +1654,58 @@ class Builder(object):
                               free, names))
         if not slots or total <= 0:
             return False
-        ns = orb_odds.spawn_counts({vn: vals for vn, vt, vals in loot['vars']})
-        ps = []
-        for _t, pct in entries:
-            lo, hi = 0.0, 1.0
-            for _ in range(60):                      # mean over N of 1 - (1 - p)^N is monotone in p
-                mid = (lo + hi) / 2
-                if sum(1 - (1 - mid) ** n for n in ns) / len(ns) < pct / 100.0:
-                    lo = mid
-                else:
-                    hi = mid
-            ps.append((lo + hi) / 2)
+        F = {vn: vals for vn, vt, vals in loot['vars']}
+        ns = orb_odds.spawn_counts(F)
+        if max(ns) <= 0:                             # a container that gives nothing: no room for a shard
+            return False
+
+        def solve(ns):
+            ps = []
+            for _t, pct in entries:
+                lo, hi = 0.0, 1.0
+                for _ in range(60):                  # mean over N of 1 - (1 - p)^N is monotone in p
+                    mid = (lo + hi) / 2
+                    if sum(1 - (1 - mid) ** n for n in ns) / len(ns) < pct / 100.0:
+                        lo = mid
+                    else:
+                        hi = mid
+                ps.append((lo + hi) / 2)
+            return ps
+        ps = solve(ns)
+        # 1.8.1: every item of an opening is ONE draw, so a shard takes the place of a vanilla item (electrum orbs gave
+        # 9.5 % less of everything, the Tartarus orb 15 %). The count equations are raised so that the expected number
+        # of vanilla items stays as it was: the game rounds them, so the count moves in steps of half an item - the
+        # step that comes closest is taken, only if it is closer than leaving them alone. Each equation gets its own
+        # factor (both still grow with the number of players)
+        if key_of(loot['name']) in self.loot_counts:
+            raise ValueError('shards added twice to %s: the second addition would dilute the first' % loot['name'])
+        mean0 = sum(ns) / float(len(ns))
+        best = (sum(ps), 1.0, 1.0, ns, ps)          # untouched counts: vanilla items x (1 - P)
+        e_lo, e_hi = (F.get('numSpawnMinEquation') or [''])[0], (F.get('numSpawnMaxEquation') or [''])[0]
+        m_lo, m_hi = orb_odds.eval_count(e_lo), orb_odds.eval_count(e_hi)
+
+        def factor_for(m, want):
+            """k >= 1 with round(m k) = want (the middle of that interval), None if out of reach"""
+            k0, k1 = max(1.0, (want - 0.5) / m), min(LOOT_COUNT_MAX, (want + 0.5) / m)
+            return round((k0 + k1) / 2, 4) if k1 - k0 >= 1e-3 else None
+        if m_lo and m_hi and m_lo > 0 and m_hi > 0:
+            r_lo, r_hi = orb_odds.engine_round(m_lo), orb_odds.engine_round(m_hi)
+            for a in range(r_lo, r_lo + 5):
+                for z in range(max(a, r_hi), r_hi + 6):
+                    k_lo, k_hi = factor_for(m_lo, a), factor_for(m_hi, z)
+                    if k_lo is None or k_hi is None:
+                        continue
+                    ns_k = list(range(a, z + 1))
+                    ps_k = solve(ns_k)
+                    dev = abs(sum(ns_k) / float(len(ns_k)) * (1 - sum(ps_k)) / mean0 - 1)
+                    if dev < best[0] - 0.005:
+                        best = (dev, k_lo, k_hi, ns_k, ps_k)
+        _, k_lo, k_hi, ns, ps = best
+        if (k_lo, k_hi) != (1.0, 1.0):
+            setv(loot, 'numSpawnMinEquation', '(%s)*%s' % (e_lo, k_lo))
+            setv(loot, 'numSpawnMaxEquation', '(%s)*%s' % (e_hi, k_hi))
+        self.loot_counts[key_of(loot['name'])] = {'k': (k_lo, k_hi), 'ns': ns,
+                                                 'vanilla': sum(ns) / float(len(ns)) * (1 - sum(ps)) / mean0}
         P = sum(ps)
         delta = P * total / (1 - P)
         _, _, ch, s_, W, free, names = min(slots, key=lambda x: x[:4])
@@ -1733,8 +1778,11 @@ class Builder(object):
                     n += 1
                 else:
                     log('  WARNING: no room for eidolons / souls in %s' % k)
-        log('  eidolon shards%s in %d electrum orbs (all difficulties), %g%% per orb' % (
-            ' and boss souls' if soul_orbs else '', n, orb_pct if shards is not None else 0))
+        cs = [c for t, c in self.loot_counts.items() if 'electrumorbs' in t]
+        log('  eidolon shards%s in %d electrum orbs (all difficulties), %g%% per orb%s' % (
+            ' and soul shards' if soul_orbs else '', n, orb_pct if shards is not None else 0,
+            ', %d-%d items per orb, vanilla items x%.3f' % (min(cs[0]['ns']), max(cs[0]['ns']), cs[0]['vanilla'])
+            if cs else ''))
         if boss_pct <= 0 or shards is None:
             return
         done, full = 0, []
@@ -1802,7 +1850,7 @@ class Builder(object):
         if self.owner_bonus:
             log('  pet bonuses of %s cancelled on the companions: %s' % (HERO_NAME, dict(self.owner_bonus)))
         rings, self.relics, active = [], [], {}
-        for path in sorted(glob.glob(os.path.join(SAVES, '_*', 'Player.chr'))):
+        for path in sorted(glob.glob(os.path.join(glob.escape(SAVES), '_*', 'Player.chr'))):
             r = self.companion(path)
             if r:
                 rings.append(r)
@@ -1928,7 +1976,7 @@ def inputs_fingerprint():
     """hash of everything a companion is built from (not of the save file itself: the game rewrites it on every save,
     and a rebuild after every session would cost a minute for nothing)"""
     h = hashlib.md5()
-    for path in sorted(glob.glob(os.path.join(SAVES, '_*', 'Player.chr'))):
+    for path in sorted(glob.glob(os.path.join(glob.escape(SAVES), '_*', 'Player.chr'))):
         try:
             c = read_char(path)
             data = {'name': c.get('name'), 'level': c.get('level'), 'masteries': c.get('masteries'),

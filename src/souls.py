@@ -526,7 +526,8 @@ def fields(r):
 
 def misc_slots(r):
     """{slot n: {item value: % per kill}} of a monster's Misc loot (chance x weight / sum of weights of the entries
-    that have an item), plus {n: problems} for slots that cannot be read as scalars"""
+    that have an item), plus {n: problems} for slots that cannot be read as scalars. 1.8.1: the same item twice in one
+    slot is summed (the Exhumed Medjai's health potion 80 + 20 collapsed to the last entry: 5 % -> 1 % per kill)"""
     out, odd = {}, {}
     F = fields(r)
     for n in (1, 2, 3):
@@ -541,8 +542,22 @@ def misc_slots(r):
             odd[n] = 'per-difficulty chance or weights'
         c = float(ch[0] or 0)
         W = sum(float(w[0] or 0) for _, w in ents)
-        out[n] = {it: c * float(w[0] or 0) / W for it, w in ents} if c and W else {}
+        out[n] = {}
+        if c and W:
+            for it, w in ents:
+                out[n][it] = out[n].get(it, 0.0) + c * float(w[0] or 0) / W
     return out, odd
+
+
+def fight_tag(k):
+    """1.8.1: what tells records of one folder and level apart as separate spawns: the level number in the file name
+    and the side quest (x4_sq301_..._exhumedmedjai_84_a / _87_a; x3sq08_ssaquath_38 / x3sq09_priest_38). The forms and
+    stages of one fight share both (boss_hades_50 / boss_hadesform2_50, boss_tiamat1_42 / boss_tiamat2_42)"""
+    leaf = k.split(BS)[-1].lower()
+    leaf = leaf[:-4] if leaf.endswith('.dbr') else leaf
+    nums = re.findall(r'_(\d+)', leaf)
+    quest = re.search(r'sq(\d+)', leaf)
+    return (nums[-1] if nums else '', quest.group(1) if quest else '')
 
 
 class Souls(object):
@@ -564,7 +579,8 @@ class Souls(object):
         self.cast_factor = round(1 + max(0.0, float(hs.get('SpellCast', 0.0) or 0.0)) / 100.0, 3)
         self.ledger = {'souls': {}, 'misc': {}, 'chests': {}, 'orbs': {}, 'settings': dict(self.st), 'hero_level': self.H,
                        'run_line': self.run_line, 'run_bonus': self.run_bonus, 'atk_factor': self.atk_factor,
-                       'cast_factor': self.cast_factor}
+                       'cast_factor': self.cast_factor,
+                       'loot_counts': getattr(b, 'loot_counts', {})}   # 1.8.1: what add_shards planned per table
         self.orb_entries = {}          # region -> (table record, % per orb), placed by Builder.eidolon_drops
         self.report = []
 
@@ -657,7 +673,7 @@ class Souls(object):
         if cache:
             try:
                 os.makedirs(os.path.dirname(cache), exist_ok=True)
-                for old in glob.glob(os.path.join(os.path.dirname(cache), 'souls_scan_*.json')):
+                for old in glob.glob(os.path.join(glob.escape(os.path.dirname(cache)), 'souls_scan_*.json')):
                     os.remove(old)
                 with open(cache + '.tmp', 'w', encoding='utf-8') as fh:
                     json.dump(rows, fh)
@@ -745,12 +761,18 @@ class Souls(object):
         src = [k for k in f['keys'] if self.drops(self.fd(k)) and ((self.fd(k).get('class') or [''])[0] or '') in CLASSES]
         # members killed in the same fight (several records of one folder at the same level: the four Honor Guards,
         # Hades' three forms, Tiamat's stages): the chance is per fight. The same boss in another folder is another
-        # spawn (Typhon of Act III and of the Underworld)
-        mult = collections.Counter((k.rsplit(BS, 1)[0], tuple(self.levels(self.fd(k)))) for k in src)
+        # spawn (Typhon of Act III and of the Underworld).
+        # 1.8.1: each record by the size of ITS fight (one family-wide k gave lone records the odds of the biggest
+        # group), and the file's level number and side quest are part of the fight: the Exhumed Medjai's _84_a / _87_a
+        # / _90_a are three level bands of one boss that all say level 72 (5.3 % instead of 15 %), Ssaquath (sq08) and
+        # the high priest (sq09) two quests. Forms and stages share the number (boss_hades_50, boss_hadesform2_50)
+        fight = lambda k: (k.rsplit(BS, 1)[0], tuple(self.levels(self.fd(k))), fight_tag(k))
+        mult = collections.Counter(fight(k) for k in src)
         k_fight = max(mult.values()) if mult else 1
-        per = lambda c: 100.0 * (1 - (1 - c / 100.0) ** (1.0 / k_fight)) if c > 0 else 0.0
-        p, p0 = per(pct), per(pct0)
-        misc = [(k, self.misc_room(self.rec(k), p0)) for k in src]
+        per = lambda c, n: 100.0 * (1 - (1 - c / 100.0) ** (1.0 / n)) if c > 0 else 0.0
+        p, p0 = per(pct, k_fight), per(pct0, k_fight)
+        p_by = {k: per(pct, mult[fight(k)]) for k in src}
+        misc = [(k, self.misc_room(self.rec(k), per(pct0, mult[fight(k)]))) for k in src]
         misc = [(k, room) for k, room in misc if room]
         chests = []
         also = next((re.compile(c) for e, c in ARENA_CHEST_EN if f['en'].startswith(e)), None)
@@ -763,7 +785,8 @@ class Souls(object):
         # 'orb' decides whether a soul can be built at all (bosses, since 1.6.0 - the set of souls must not change);
         # which souls the orbs actually give is decided in build() (1.7.9: hero monsters, and bosses with no own drop)
         orb = self.region(f) if f['kind'] == 'boss' else None
-        return {'p': p, 'k_fight': k_fight, 'misc': misc, 'chests': chests, 'orb': orb, 'region': self.region(f)}
+        return {'p': p, 'p_by': p_by, 'k_fight': k_fight, 'fights': dict(mult), 'misc': misc, 'chests': chests,
+                'orb': orb, 'region': self.region(f)}
 
     def dropping(self, kind):
         """the ini lets this kind of soul drop (Souls=1, SoulHeroes=1 for hero monsters)"""
@@ -1355,12 +1378,13 @@ class Souls(object):
                 continue
             for k, _ in (pl['misc'] if pl['p'] > 0 else []):
                 r = R[k]
-                room = self.misc_room(r, pl['p'])       # re-checked: the eidolon shard may have taken the free slot
+                p = pl['p_by'][k]                       # 1.8.1: the odds of this record's own fight
+                room = self.misc_room(r, p)             # re-checked: the eidolon shard may have taken the free slot
                 if room is None:
                     continue
-                self.add_misc(r, room[1], s['shard_table'], pl['p'])
-                self.ledger['misc'].setdefault(k, {})[s['shard_table']] = pl['p']
-                s['sources'].append('kill %s %.1f%% (%s slot %d)' % (k.split(BS)[-1], pl['p'], room[0], room[1]))
+                self.add_misc(r, room[1], s['shard_table'], p)
+                self.ledger['misc'].setdefault(k, {})[s['shard_table']] = p
+                s['sources'].append('kill %s %.1f%% (%s slot %d)' % (k.split(BS)[-1], p, room[0], room[1]))
                 n_misc += 1
             for ck in (pl['chests'] if self.st['soulchestchance'] > 0 else []):
                 by_chest[ck].append((s['shard_table'], self.st['soulchestchance']))
@@ -1391,8 +1415,8 @@ class Souls(object):
         names = {}
         for j in range(1, 7):
             it = [x for x in (getv(r, 'lootMisc%dItem%d' % (n, j)) or []) if x]
-            if it:
-                names[tuple(key_of(x) for x in it)] = (j, getv(r, 'lootMisc%dItem%d' % (n, j)))
+            if it:      # 1.8.1: an item named twice keeps its summed % in its first entry
+                names.setdefault(tuple(key_of(x) for x in it), (j, getv(r, 'lootMisc%dItem%d' % (n, j))))
         c2 = sum(q for _, q in ents) + p
         if c2 > 100.0 + 1e-9:
             raise ValueError('no room in Misc %d of %s' % (n, r['name']))
@@ -1523,6 +1547,35 @@ def fingerprint():
 
 
 # ---------------------------------------------------------------------- self-check
+def vanilla_kept(what, R, nf, oR, of, planned=None):
+    """1.8.1: problems if the vanilla entries of a loot table we changed (fields nf; as it was: of in oR) do not all
+    keep their expected number per opening times ONE factor, or that factor is not what the build planned
+    (build_companions.add_shards, Builder.loot_counts). How far it is from 1 depends on the chances in the ini and
+    on whether the table has count equations (the Tartarus orb has none): a factor outside VANILLA_KEPT is logged,
+    it does not stop the install"""
+    import build_companions as B
+    fac = orb_odds.vanilla_factors(R, nf, oR, of)
+    if not fac:
+        return []
+    lo, hi = min(fac.values()), max(fac.values())
+    if hi - lo > 1e-6 * hi:
+        (s_, x), _ = min(fac.items(), key=lambda kv: kv[1])
+        return ['%s: vanilla entries changed unevenly (x%.5f .. x%.5f, e.g. slot %d %s)' % (
+            what, lo, hi, s_, x.split(BS)[-1])]
+    if planned is not None and abs(lo - planned) > 1e-3:
+        return ['%s: vanilla items per opening x%.4f, the build planned x%.4f' % (what, lo, planned)]
+    if planned is None and not 0.5 <= lo <= 1.5:
+        return ['%s: vanilla items per opening x%.3f' % (what, lo)]
+    VANILLA_SEEN.append(lo)
+    if not B.VANILLA_KEPT[0] <= lo <= B.VANILLA_KEPT[1]:
+        VANILLA_FAR.append('%s x%.3f' % (what, lo))
+    return []
+
+
+VANILLA_SEEN = []      # factors vanilla_kept passed (for the log line)
+VANILLA_FAR = []       # ... and those outside build_companions.VANILLA_KEPT (logged as a note)
+
+
 def check(R, baseR, ledger, log=print):
     """-> problems. Pets as Class Pet without boss leftovers, chain relic -> bonus -> summon -> pet, amulet only, every
     soul obtainable, kill / chest / orb odds as planned and every vanilla entry's odds unchanged."""
@@ -1713,10 +1766,10 @@ def check(R, baseR, ledger, log=print):
             # 1.7.8: six entries a slot, as the engine reads them; a vanilla entry may sit inside our wrapper table
             for n_, j_ in orb_odds.past_slot_max(nf):
                 bad.append('chest %s slot %d: entry %d past the six the game reads' % (ck.split(BS)[-1], n_, j_))
-            for s_ in range(1, 7):
-                for x, _w in orb_odds.slot_pairs(of, s_):
-                    if abs(orb_odds.kept_share(R, nf, s_, x) - orb_odds.kept_share(oR, of, s_, x)) > 1e-6:
-                        bad.append('chest %s slot %d: vanilla %s odds changed' % (ck.split(BS)[-1], s_, x.split(BS)[-1]))
+            # 1.8.1: what one opening gives of each vanilla entry (items x chance / total x weight share) - the same
+            # factor for all of them, and near 1 (the count equations make up for the items the shards take)
+            bad += vanilla_kept('chest ' + ck.split(BS)[-1], R, nf, oR, of,
+                                (ledger.get('loot_counts') or {}).get(t_new, {}).get('vanilla'))
     # electrum orbs of every difficulty: SoulOrbChance % per orb for a soul of the orb's region
     for reg, o in ledger['orbs'].items():
         targets = frozenset(o['relics'])
@@ -1733,6 +1786,12 @@ def check(R, baseR, ledger, log=print):
         if not n:
             bad.append('orbs of region %s not found' % reg)
     nb = sum(1 for s in ledger['souls'].values() if s['kind'] == 'boss')
-    log('souls: %d bosses + %d hero monsters as amulet souls, %d monster records, %d chests, %d orb regions checked' % (
-        nb, len(ledger['souls']) - nb, len(ledger['misc']), len(ledger['chests']), len(ledger['orbs'])))
+    seen, far = VANILLA_SEEN[:], VANILLA_FAR[:]
+    del VANILLA_SEEN[:], VANILLA_FAR[:]
+    log('souls: %d bosses + %d hero monsters as amulet souls, %d monster records, %d chests, %d orb regions checked%s' % (
+        nb, len(ledger['souls']) - nb, len(ledger['misc']), len(ledger['chests']), len(ledger['orbs']),
+        ', vanilla chest items per opening x%.3f..x%.3f' % (min(seen), max(seen)) if seen else ''))
+    if far:
+        log('  note: fewer/more vanilla items than in the game (no item count to make up for it, or high chances in '
+            'the ini): %s' % ', '.join(sorted(set(re.sub(r'_0\d\.dbr', '', x) for x in far))))
     return bad
