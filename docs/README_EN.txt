@@ -88,8 +88,11 @@ ENSLAVED BOSS SOULS (1.6.6)
 ---------------------------
 Enslaved Soul: [boss name]
   A relic of 3 shards for a boss, 2 for a hero monster (yellow name). Shards of one soul combine like ordinary relic
-  shards; the completed soul fits the AMULET only and grants "Summon Enslaved Soul: [name]". The rings stay with the
-  eidolons: two companions and one soul at a time. 78 bosses and 301 hero monsters have a soul.
+  shards; the completed soul grants "Summon Enslaved Soul: [name]". A BOSS soul fits the amulet only, a hero
+  monster's soul an amulet or a ring (1.8.4), beside the eidolons: a boss in the amulet and two heroes or eidolons
+  in the rings, for example. 78 bosses and 367 hero monsters have a soul, 66 of them named side-quest characters
+  (1.8.4: the three undead princes near Megara, Ino, Leucus I, Sinmara, Sciron, Kallixenia and more) that the game
+  calls "quest" monsters rather than heroes.
 
 Where to get them
   - From the boss or hero monster itself when it dies: 15% per boss fight, 12% per hero (SoulBossChance=,
@@ -150,7 +153,7 @@ The soul in battle
 EPIC / LEGENDARY RINGS
 ----------------------
 The game does not allow relics in Epic or Legendary (purple) items. Eidolons and enslaved souls follow the same
-rule (a soul needs an ordinary, not a purple, amulet). If you want them in purple rings and amulets, use a separate
+rule (a soul needs an ordinary, not a purple, amulet or ring). If you want them in purple rings and amulets, use a separate
 mod that lifts this restriction for all relics
 (for example "Enchanting for Epic and Legendary Items" on Nexus). It is not part of TQ Together and not required.
 

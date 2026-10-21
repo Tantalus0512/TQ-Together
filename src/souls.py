@@ -3,8 +3,8 @@
 
 A boss or a hero monster drops "Enslaved Soul: <name>" (1.6.1, owner's name; "Порабощённая душа") - a relic of
 SoulBossShards (3) / SoulHeroShards (2) shards. Shards of the same soul combine like vanilla relic shards; the last
-one rolls the completion bonus, which grants "Summon Enslaved Soul: <name>". The soul fits the AMULET only (owner 16.10): eidolons stay in the rings, so a hero can lead two eidolons and
-one soul.
+one rolls the completion bonus, which grants "Summon Enslaved Soul: <name>". A boss soul fits the AMULET only (owner 16.10);
+a hero monster's soul an amulet or a ring (1.8.4, SOUL_FITS), beside the eidolons.
 
 The summoned soul is the boss record turned into a Class Pet, the way the developers turned the boss Ylva
 (loki_a_ylva_55) into the companion Ylva (x2sq23_ylva_companion): Pet.tpl, pet controllers, the pet panel; no next
@@ -64,6 +64,13 @@ LIMITS = {'soulbossshards': (2, 5), 'soulheroshards': (2, 5), 'soulbosschance': 
 # 1.8.2: the ordinary chests the Tartarus arenas put down (proxy 01x_tartarus, "Non-Golden chest in Tartarus") - the
 # Underworld's own chests are 0Nb_ / 0Nc_; the reward orb after Tartarus himself is bosschest_tartarus_0N
 TARTARUS_ARENA_CHEST = re.compile(r'^0[123]x_hadeschest_(common|infreq|rare)\.dbr$')
+# 1.8.4, owner 21.10: "the bosses only into amulets; the eidolons and the hero monsters may be in rings" - a boss soul
+# stays the one soul of the amulet, a hero monster's soul fits an amulet or a ring (beside the eidolons). A soul set
+# into an amulet before keeps working either way
+SOUL_FITS = {'boss': {'amulet'}, 'hero': {'amulet', 'ring'}}
+# 1.8.4 (owner 21.10, "do souls drop from the three skeletons near Megara?" - Polypas, Menon, Aristeus: classified
+# Quest, not Hero): named Quest monsters are hero monster souls; not the developers' test monsters
+QUEST_SKIP = re.compile(r'\\zz_?dev\\')
 
 
 def settings():
@@ -683,11 +690,22 @@ class Souls(object):
         R = self.R
         fams = collections.OrderedDict()
         tag_en = {}
-        for k, mc, cls_, tag, drop_ in self.scan():
-            if cls_ not in CLASSES or SKIP_KEY.search(k):
+        rows = self.scan()
+        # 1.8.4: a Quest record makes a soul only when its tag names a character of its own: no Boss / Hero soul family
+        # has it (those stay exactly as they were) and no record of another classification carries it (a quest's satyr
+        # scout is named like every satyr scout), with a name text, not one of the developers' test names
+        mcs = collections.defaultdict(set)
+        for k, mc, cls_, tag, drop_ in rows:
+            if tag.strip() and not SKIP_KEY.search(k):
+                mcs[tag.strip().lower()].add(mc)
+        for k, mc, cls_, tag, drop_ in rows:
+            if mc == 'Other' or cls_ not in CLASSES or SKIP_KEY.search(k):
                 continue
             tag = tag.strip()
             if not tag:
+                continue
+            if mc == 'Quest' and (mcs[tag.lower()] & {'Boss', 'Hero', 'Other'} or QUEST_SKIP.search(k)
+                                  or not self.text(tag, 'en')):
                 continue
             en = (self.text(tag, 'en') or literal(tag)).lower()
             tag_en[tag.lower()] = en
@@ -706,6 +724,7 @@ class Souls(object):
         for t, f in fams.items():
             kind = 'boss' if 'Boss' in f['mc'] else 'hero'
             f['kind'] = kind
+            f['quest'] = f['mc'] == {'Quest'}       # 1.8.4: a named side-quest monster
             f['en'] = tag_en.get(t, '')
             f['sid'] = re.sub(r'[^a-z0-9]+', '', t)[:40]
             f['rep'] = max(f['keys'], key=lambda k: self.rep_score(k))
@@ -715,7 +734,10 @@ class Souls(object):
     def scan(self):
         """[(key, classification, Class, name tag, dropItems)] of every Boss / Hero creature record (Builder's
         boss_monsters uses them too); reading a few fields of 15k monster records takes seconds, so the result is kept
-        per base database + tweaks in <data>\\cache"""
+        per base database + tweaks in <data>\\cache.
+        1.8.4: the Quest-classified ones as well (the three undead princes near Megara, Ino, Leucus I, Sinmara...: named
+        side-quest monsters the game does not call heroes), and as 'Other' any record of another classification that
+        carries a Quest tag - a satyr scout of a quest is named like every satyr scout (families() leaves those out)"""
         if getattr(self, '_rows', None) is not None:
             return self._rows
         R = self.R
@@ -724,7 +746,7 @@ class Souls(object):
         try:
             st_ = os.stat(base)
             tag_ = '%d_%d_%s' % (st_.st_size, int(st_.st_mtime), hashlib.md5(
-                (tweaks.fingerprint() + 'scan v2').encode('utf-8')).hexdigest()[:10])
+                (tweaks.fingerprint() + 'scan v3').encode('utf-8')).hexdigest()[:10])
         except OSError:
             tag_ = None
         cache = os.path.join(paths.data_dir(), 'cache', 'souls_scan_%s.json' % tag_) if tag_ else None
@@ -737,7 +759,7 @@ class Souls(object):
             except Exception:
                 pass
         few = getattr(R, 'fields', None)
-        rows = []
+        rows, others = [], []
         for k in sorted(R):
             if 'creature' not in k:      # every one: boss_monsters needs the sandbox records too
                 continue
@@ -747,8 +769,13 @@ class Souls(object):
                 F = fields(self.peek(k))
             one = lambda f, d='': (F.get(f.lower()) or [d])[0]
             mc = one('monsterClassification') or ''
-            if mc in ('Boss', 'Hero'):
-                rows.append([k, mc, one('Class') or '', one('description') or '', one('dropItems', 1)])
+            row = [k, mc, one('Class') or '', one('description') or '', one('dropItems', 1)]
+            if mc in ('Boss', 'Hero', 'Quest'):
+                rows.append(row)
+            elif row[3].strip():
+                others.append(row)
+        qtags = {r_[3].strip().lower() for r_ in rows if r_[1] == 'Quest' and r_[3].strip()}
+        rows += [[k, 'Other', cls_, tag, drop] for k, mc, cls_, tag, drop in others if tag.strip().lower() in qtags]
         if cache:
             try:
                 os.makedirs(os.path.dirname(cache), exist_ok=True)
@@ -863,7 +890,9 @@ class Souls(object):
                 chests = sorted(k for k in self.chests() if rx.search(k.split(BS)[-1]))
         # 'orb' decides whether a soul can be built at all (bosses, since 1.6.0 - the set of souls must not change);
         # which souls the orbs actually give is decided in build() (1.7.9: hero monsters, and bosses with no own drop)
-        orb = self.region(f) if f['kind'] == 'boss' else None
+        # 1.8.4: a named side-quest monster whose loot has no room (its Misc slots hold the quest's own item at 100 %:
+        # the Ancients, the Restless King, Sciron) is built anyway - its soul comes from its land's orbs and Tartarus
+        orb = self.region(f) if f['kind'] == 'boss' or f.get('quest') else None
         return {'p': p, 'p_by': p_by, 'k_fight': k_fight, 'fights': dict(mult), 'misc': misc, 'chests': chests,
                 'orb': orb, 'region': self.region(f)}
 
@@ -1212,17 +1241,18 @@ class Souls(object):
         shards = st['soulbossshards'] if kind == 'boss' else st['soulheroshards']
         setv(relic, 'completedRelicLevel', shards, 0)
         for q in RELIC_SLOTS():
-            setv(relic, q, 1 if q == 'amulet' else 0, 3)      # BOOL: Game.dll reads these with the bool getter
+            setv(relic, q, 1 if q in SOUL_FITS[kind] else 0, 3)   # BOOL: Game.dll reads these with the bool getter
         setv(relic, 'levelRequirement', 1, 0)
         setv(relic, 'itemCost', [8000, 8000, 8000] if kind == 'boss' else [4000, 4000, 4000], 0)
         what_ru = 'босса' if kind == 'boss' else 'героя'
+        where_ru, where_en = ('амулет', 'an amulet') if kind == 'boss' else ('амулет или кольцо', 'an amulet or a ring')
         setv(relic, 'description', b.tag('tagTQSoul_%s_relic' % sid, 'Порабощённая душа: %s' % name_ru,
                                          'Enslaved Soul: %s' % name_en))
         setv(relic, 'itemText', b.tag('tagTQSoul_%s_relictext' % sid,
-             'Частица порабощённой души %s: %s. Собери %d и вложи в амулет — и душа будет сражаться за тебя, '
-             'становясь сильнее вместе с тобой.' % (what_ru, self.full(f, 'ru'), shards),
-             'A shard of the enslaved soul of %s. Join %d and set them into an amulet - the soul will fight for you '
-             'and grow with you.' % (self.full(f, 'en'), shards)))
+             'Частица порабощённой души %s: %s. Собери %d и вложи в %s — и душа будет сражаться за тебя, '
+             'становясь сильнее вместе с тобой.' % (what_ru, self.full(f, 'ru'), shards, where_ru),
+             'A shard of the enslaved soul of %s. Join %d and set them into %s - the soul will fight for you '
+             'and grow with you.' % (self.full(f, 'en'), shards, where_en)))
         setv(relic, 'FileDescription', 'TQ Together soul relic: %s' % sid)
         shard_t = self.table(self.ns + '%s_soulshard.dbr' % sid, [relic['name']], 'one shard of soul %s' % sid)
         f['relic'], f['shard_table'] = relic['name'], shard_t['name']
@@ -1822,8 +1852,9 @@ def check(R, baseR, ledger, log=print):
                     sid, get1(rel, 'completedRelicLevel'), s['shards']))
             for q in B.RELIC_SLOTS:
                 t = next((t for vn, t, v in rel['vars'] if vn == q), None)
-                if get1(rel, q) != (1 if q == 'amulet' else 0) or t != 3:
-                    bad.append('soul %s: fit flag %s=%s type %s (amulet only, bool)' % (sid, q, get1(rel, q), t))
+                if get1(rel, q) != (1 if q in SOUL_FITS[s['kind']] else 0) or t != 3:
+                    bad.append('soul %s: fit flag %s=%s type %s (want %s, bool)' % (
+                        sid, q, get1(rel, q), t, '/'.join(sorted(SOUL_FITS[s['kind']]))))
                     break
         if call is not None and (getv(call, 'spawnObjectsTimeToLive') or get1(call, 'petLimit') != 1):
             bad.append('soul %s: summon TTL / petLimit' % sid)
@@ -1860,8 +1891,10 @@ def check(R, baseR, ledger, log=print):
                     [round(x, 1) for x in getv(gr, 'characterLifeModifier') or []] != [0.0, 0.0, gd['life_pct']]:
                 bad.append('soul %s: guard %s missing or not life +%g%% on Legendary only' % (sid, s.get('guard'),
                                                                                              gd.get('life_pct')))
-        if rep is not None and any('boss_conversionimmunity' in (v[0] or '').lower() for vn, vt_, v in rep['vars']
-                                   if vn.startswith('skillName') and v) and \
+        # 1.8.4: only an immunity the game itself gives - four Egyptian side-quest monsters name a bare
+        # 'boss_conversionimmunity' (no path, no record), which the game skips
+        if rep is not None and any(key_of(v[0]).endswith(BS + 'boss_conversionimmunity.dbr') and key_of(v[0]) in R
+                                   for vn, vt_, v in rep['vars'] if vn.startswith('skillName') and v and v[0]) and \
                 not any(k.endswith(BS + 'boss_conversionimmunity.dbr') for k in own):
             bad.append('soul %s: the boss\'s own immunity (boss_conversionimmunity) is gone' % sid)
     # kill odds: per Misc slot, every vanilla entry keeps its % and ours are as planned (eidolon shard: 1.5.1 odds)
@@ -1935,7 +1968,8 @@ def check(R, baseR, ledger, log=print):
     nb = sum(1 for s in ledger['souls'].values() if s['kind'] == 'boss')
     seen, far = VANILLA_SEEN[:], VANILLA_FAR[:]
     del VANILLA_SEEN[:], VANILLA_FAR[:]
-    log('souls: %d bosses + %d hero monsters as amulet souls, %d monster records, %d chests, %d orb regions checked%s' % (
+    log('souls: %d bosses (amulet) + %d hero monsters (amulet or ring), %d monster records, %d chests, %d orb regions '
+        'checked%s' % (
         nb, len(ledger['souls']) - nb, len(ledger['misc']), len(ledger['chests']), len(ledger['orbs']),
         ', vanilla chest items per opening x%.3f..x%.3f' % (min(seen), max(seen)) if seen else ''))
     if far:

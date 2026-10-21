@@ -1,6 +1,18 @@
 TQ Together - changelog
 =======================
 
+1.8.4
+- Hero monster souls fit an amulet OR a ring; boss souls still the amulet only. A boss in the amulet and two heroes or
+  eidolons in the rings, for example. Souls already set into an amulet keep working.
+- Souls for 66 named side-quest characters that the game calls "quest" monsters rather than heroes: the three undead
+  princes near Megara (Polypas, Menon, Aristeus), Ino, Cepharis, Leucus I, Pandarus, Iznu, Neb-kemi, Sadiki, Tor
+  Skullcrusher, Yurg Rattlebone, the Kornwyf, Sinmara, Sciron, Gunnlod, Isagonus, Kallixenia, the cyclopes Brontes
+  and Steropes, the Empusa heroines, the Machae high generals and more. They are hero monster souls: 2 shards, 12% per
+  fight with the character itself, and from its land's electrum orbs and the Tartarus arena chests. Seven have no room
+  in their loot (the four Ancients, Sciron, the Restless King, the Vengeful Ghost) - their souls come from the orbs
+  and Tartarus only. Nameless "quest" copies of ordinary monsters (a satyr scout and such) get no soul. The 379 souls
+  from before are unchanged.
+
 1.8.3
 - Fixed: souls that fight with a weapon (swords, bows - 91 of 379) hit much harder than intended, some harder than
   the hero. A soul's damage was measured by its bare-hand hit, which most of them do not have, so the corridor did
