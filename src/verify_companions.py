@@ -615,6 +615,9 @@ def check(build, base_arz, log=print, touched=(), gear=None, souls=None):
             if v(r, 'spawnObjectsTimeToLive')[0] or g(r, 'petLimit') != 1 or not g(r, 'skillUpBitmapName'):
                 bad.append('%s: summon fields (TTL %s, petLimit %s, icon %s)' % (k.split(BS)[-1], v(r, 'spawnObjectsTimeToLive')[0],
                                                                                 g(r, 'petLimit'), g(r, 'skillUpBitmapName')))
+    # 8. item looks from the atelier (1.9.0): each clone = its item exactly, with the look's look fields
+    import transmog
+    bad += transmog.check(R, log=log)
     return bad
 
 

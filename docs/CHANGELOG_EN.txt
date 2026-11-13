@@ -1,6 +1,76 @@
 TQ Together - changelog
 =======================
 
+1.9.1
+- Save insurance: before every install, uninstall and Atelier write the heroes (SaveData\Main\_*\Player.chr) and the
+  transfer stash (Sys\winsys.dx?) are copied into data folder\safety\<time>, only when they changed since the last
+  copy; the last 10 are kept (half a megabyte each). If Steam puts a clean game database back and the game is started
+  past TQ Together, items with an Atelier look, eidolons and souls vanish from the save - the copy stays.
+- Safer writes: the Atelier vault, the look registry and the game files are flushed to disk before the swap and read
+  back after it; a mismatch puts the previous file back.
+- The check for a running game and TQVault no longer fails on Windows with non-Latin lines in the process list (such a
+  failure used to mean "not running"). When TQVault cannot be checked, the Atelier asks. The game is checked again
+  right before install and uninstall.
+- Uninstall: when the saves and vaults could not be checked for Atelier items, it says so and wants "YES, NO CHECK"
+  instead of "YES".
+- Atelier: an item with a look the registry does not know is recovered from the installed database or stops the work
+  (it used to become a clone of a clone); a vault of fewer than 12 bags is left alone; any error says whether the
+  vault was changed, without a traceback.
+- A saved original game file (*.tqtogether-base) is checked before it is copied; a damaged one is never copied over
+  the working file - TQ Together asks to verify the game files in Steam.
+- If Steam verified or updated the game files, start the game only through TQ Together (README and the end of the
+  Atelier's work say so).
+
+1.9.0
+- Atelier: a new look for an item without moving stats around. The item stays what it is (stats, affixes, relics,
+  set, weapon damage) and looks like another item of the same kind. Chosen in TQVault: a vault "Atelier", in a bag
+  the item on the left and the sample on the right, then Atelier.bat (TQTogether.exe --atelier). The last bag gives
+  the own look back. Details: README, "Atelier".
+  Under the hood: a clone of the item's record with the sample's look fields (model, textures, weapon trail, the icon
+  when it takes the same cells); in the vault only the record the item refers to changes. Clones are never removed;
+  a lost registry is recovered from the installed database, and if items refer to clones nobody can rebuild the
+  build stops and installs nothing. The uninstaller warns about items with a new look.
+
+1.8.6
+- The hero's pets under the hero difficulty (Difficulty=power). Legendary monsters are x times tougher and hit
+  harder, and the hero's own summons stayed as they were: a wolf pack that kills a monster in 5 seconds on the
+  game's Legendary took a minute (a hero at x12). Now whatever the mastery skills summon gets a passive on
+  Legendary: damage x (life factor) ^ AutoPetPower, life and defence for the monsters' extra damage and accuracy,
+  as the souls. Normal and Epic stay as in the game. AutoPetPower=1 by default, 0 = off. Companions and souls do
+  not change; no monster in the game summons a hero's pet (checked over the whole database).
+- Fixed: the start stopped at the self-check ("soul basic attack above its corridor") once the hero's pace rose a
+  lot. Weapon souls striking at the hero's pace got their per-strike damage by the old 1.8.3 rule, and part of a
+  weapon strike does not follow the factor - at a fast pace they went 7-34% past their corridor. The corridor now
+  holds at the hero's pace too.
+
+1.8.5
+- The hero difficulty (Difficulty=power) measures strength anew: damage per second against a common Legendary monster
+  instead of the character window's number. The window misses crits (an offensive ability far above the monsters'
+  defence makes almost every hit x1.5), on-hit buffs (Battle Rage and the like) and weapon-pool attacks, so heroes with
+  the same real damage got monsters twice as tough as each other. Now: the average hit with hit chance and crits,
+  on-hit buffs and pool attacks by their chances, less the resistances (30%) and armour (414) of a common Legendary
+  monster, times the real hits per second - on the database with your tweaks, as the game runs it. Example: two heroes
+  hitting for 45-52k got x15 and x7 by the window with the same settings, now x12 and x11.
+- AutoLifeBase default 960 -> 3200 for the new measure. If you set AutoLifeBase in TQTogether.ini yourself, remove the
+  line or pick it again: the new numbers are 1.2-4.7 times the old ones.
+- Where a hero's strength comes from (window -> hit on a monster -> per second) is in tq_together.log and at the top of
+  build\companions.txt. A hero who did not change is not measured again at the next start (cache).
+- Soul damage evened out. Fixed: some souls hit many times harder than meant, some harder than the hero himself.
+  * 185 souls carry their weapon from a "dynamic" loot table (the clubs, spears and bows of Neanderthals, Yerren,
+    Machae, Wodan, Baldr...). Their strike was measured by the empty hand, the cap never held them and they got the
+    full factor: up to 2.7 million damage per second on a Legendary monster (113k on average). Now the weapon is
+    found in any table.
+  * A soul's damage factor went into physical AND pierce damage, and the pierce part of a sword or spear hit takes
+    both - for such souls it grew with the factor squared. The Faceless One hit 46k per strike (the hero 52k), now 14k.
+  * A soul's strike is measured like the hero's strength: on a common Legendary monster, with crits, resistances,
+    armour and its own passives; the caps (a boss 1.5x the average soul, a hero monster the average) hold on that
+    measure.
+  * Souls follow the hero's real damage (as the hero difficulty does), not the character window: for a hero with
+    Battle Rage and the like the souls are no longer 5 times weaker than meant.
+  * SoulDamage default 30 -> 35 for the new measure: the average boss soul hits as before (about 35% of the hero's
+    damage), only the outliers change. For a hero with 145k damage per second: the strongest hero monster soul 2.7M
+    -> 51k, boss soul 1.5M -> 77k; casters (staves, a strike of almost 0) keep their spells as strong as before.
+
 1.8.4
 - Hero monster souls fit an amulet OR a ring; boss souls still the amulet only. A boss in the amulet and two heroes or
   eidolons in the rings, for example. Souls already set into an amulet keep working.

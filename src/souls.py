@@ -22,7 +22,8 @@ Nessus' 1282 base life is not paper, Akhenaten's 105000 not immortal) x the same
 x SoulLife %. On Legendary the pet pak makes the median ~47k (1.7.1; 24k in 1.6.5, 16.6k before); the game's
 strongest permanent pets have 1.9-2.7k base (~8k).
 1.7.0: damage and run speed follow the hero (SoulDamage % of his character-window DPS, his own ground speed; giants
-no faster than themselves in the game) - see DAMAGE_FIELDS and SPEEDUP_MAX below. 1.7.3: no animation of a soul
+no faster than themselves in the game) - see DAMAGE_FIELDS and SPEEDUP_MAX below. 1.8.5: both damages measured on a
+typical Legendary monster (hero_power.combat_strength, strike_model) - Souls.power. 1.7.3: no animation of a soul
 plays more than SoulSpeedMax (2) times faster than the boss's own, so auras on top do not turn it into mush.
 
 Where souls drop (every vanilla item keeps its exact odds):
@@ -57,7 +58,10 @@ SUB = 'souls' + BS
 # opening, bosses and heroes equally likely as groups (SoulTartarusChance)
 DEFAULTS = (('souls', 1), ('soulheroes', 1), ('soulbossshards', 3), ('soulheroshards', 2), ('soulbosschance', 15.0),
             ('soulherochance', 12.0), ('soulorbchance', 20.0), ('soulchestchance', 15.0), ('soultartaruschance', 10.0),
-            ('soullife', 100.0), ('soulmaxscale', 1.3), ('souldamage', 30.0), ('soulspeedmax', 2.0), ('soultestshop', ''))
+            ('soullife', 100.0), ('soulmaxscale', 1.3), ('souldamage', 35.0), ('soulspeedmax', 2.0), ('soultestshop', ''))
+# 1.8.5: SoulDamage 30 -> 35 with the new measure (the hero's damage on a Legendary monster instead of his character
+# window, the soul's real strike instead of its bare hit): the median boss soul of Nikton keeps what 1.8.4 gave it
+# (~50k per second on a common Legendary monster) - only the souls past their corridor change
 LIMITS = {'soulbossshards': (2, 5), 'soulheroshards': (2, 5), 'soulbosschance': (0, 95), 'soulherochance': (0, 95),
           'soulorbchance': (0, 50), 'soulchestchance': (0, 95), 'soultartaruschance': (0, 50), 'soullife': (10, 1000),
           'soulmaxscale': (0.5, 3), 'souldamage': (0, 500), 'soulspeedmax': (1.0, 3.0)}
@@ -77,8 +81,8 @@ def settings():
     """TQTogether.ini: Souls=1, SoulHeroes=1, SoulBossShards=3, SoulHeroShards=2, SoulBossChance=15,
     SoulHeroChance=12, SoulOrbChance=20, SoulChestChance=15, SoulTartarusChance=10 (% per ordinary chest of the
     Tartarus arenas: a soul of any boss or hero monster), SoulLife=100 (%), SoulMaxScale=1.3,
-    SoulDamage=30 (% of the hero's damage per second the median boss soul deals with its basic attack; 0 = the boss's
-    own damage only), SoulSpeedMax=2 (no animation of a soul faster than this many times the boss's own; 1 = the
+    SoulDamage=35 (% of the hero's damage per second the median boss soul deals with its basic attack, both on a
+    typical Legendary monster - 1.8.5; 0 = the boss's own damage only), SoulSpeedMax=2 (no animation of a soul faster than this many times the boss's own; 1 = the
     boss's own speeds), SoulTestShop=arachne,nessus (shards sold by the ring merchants - for testing)"""
     st = paths.settings()
     out = {}
@@ -375,13 +379,209 @@ def weapon_hit(R, rec, d=2):
     return 0.0, 0.0
 
 
+# 1.8.5: the weapon a soul strikes with, as the game's damage pipeline needs it (hero_power.Store 'weapon' role): every
+# numeric offensive* field - base damage and pierce ratio, bonus elemental damage (the monsters' staves carry theirs
+# there), modifiers - averaged over the weapons its loot gives
+PROJECTILE_WEAPON = ('weaponhunting_bow', 'weaponmagical_staff', 'weaponhunting_rangedonehand')
+_WEAPON_MIX = {}
+
+
+def _item_level_eq(eq, level):
+    """a loot table's min/maxItemLevelEquation ('parentLevel-3') at the creature's level; None if it does not read"""
+    try:
+        return float(eval((eq or '').replace('^', '**'), {'__builtins__': {}}, {'parentLevel': float(level)}))
+    except Exception:
+        return None
+
+
+def _weapon_mix(R, k, level, depth=0):
+    """1.8.5: ({field: average}, {class: share}) of the weapons a loot record leads to for a creature of this level -
+    the walk of _weapon_avg with every offensive* field, and through LootItemTable_DynWeight too: its itemNames in the
+    item level window of its equations (monster_stats.py; the nearest level when none fits), equal weights. 1.8.3
+    walked only lootNameN: 50+ souls carry their club or sword from such a table (Barmanu, the Yerren heroes) and were
+    measured by their bare hand - 0 - like the weapon souls before 1.8.3. None if it leads to no weapon"""
+    ck = (k, int(level))
+    if ck in _WEAPON_MIX:
+        return _WEAPON_MIX[ck]
+    _WEAPON_MIX[ck] = None
+    if depth > 10 or k not in R:
+        return None
+    r = R.peek(k) if hasattr(R, 'peek') else R[k]
+    F = fields(r)
+    cls = ((F.get('class') or [''])[0] or '')
+    if WEAPON_CLASS.match(cls):
+        if cls.lower() == 'weaponarmor_shield':
+            return None
+        _WEAPON_MIX[ck] = ({f: float(v[0]) for f, v in F.items() if f.startswith('offensive') and v and
+                            isinstance(v[0], (int, float)) and not isinstance(v[0], bool)}, {cls.lower(): 1.0})
+        return _WEAPON_MIX[ck]
+    entries = []
+    if cls == 'LootItemTable_DynWeight':
+        items = []
+        for nm in F.get('itemnames') or []:
+            if nm and key_of(nm) in R:
+                IF = R.fields(key_of(nm), ('itemLevel',)) if hasattr(R, 'fields') else fields(R[key_of(nm)])
+                items.append((float((IF.get('itemlevel') or [0])[0] or 0), key_of(nm)))
+        lo = _item_level_eq((F.get('minitemlevelequation') or [''])[0] or 'parentLevel-3', level)
+        hi = _item_level_eq((F.get('maxitemlevelequation') or [''])[0] or 'parentLevel', level)
+        pick = [it for lv, it in items if lo is not None and hi is not None and lo <= lv <= hi]
+        if not pick and items:
+            best = min(abs(lv - level) for lv, _ in items)
+            pick = [it for lv, it in items if abs(lv - level) == best]
+        entries = [(1.0, it) for it in pick]
+    else:
+        for j in range(1, 31):
+            v = F.get('lootname%d' % j)
+            if v and v[0]:
+                entries.append((float((F.get('lootweight%d' % j) or [1])[0] or 0), key_of(v[0])))
+    acc, cw, tot = collections.defaultdict(float), collections.defaultdict(float), 0.0
+    for w, it in entries:
+        got = _weapon_mix(R, it, level, depth + 1) if w > 0 else None
+        if got is not None:
+            for f, x in got[0].items():
+                acc[f] += w * x
+            for c, x in got[1].items():
+                cw[c] += w * x
+            tot += w
+    _WEAPON_MIX[ck] = ({f: x / tot for f, x in acc.items()}, {c: x / tot for c, x in cw.items()}) if tot else None
+    return _WEAPON_MIX[ck]
+
+
+def weapon_mix(R, rec, d=2):
+    """1.8.5: (weapon record for hero_power.Store {field: [average]}, chance it carries one 0..1, the weapon's class)
+    of the hand weapon_hit() walks (right hand first, a bow in the left), at the creature's level on difficulty d;
+    (None, 0, '') for a creature without one"""
+    F = fields(rec)
+    lv = F.get('charlevel') or [1]
+    level = float(lv[min(d, len(lv) - 1)] or 1)
+    for hand in ('righthand', 'lefthand'):
+        ch = float((F.get('chancetoequip%s' % hand) or [0])[0] or 0)
+        if ch <= 0:
+            continue
+        acc, cw, tot = collections.defaultdict(float), collections.defaultdict(float), 0.0
+        for j in range(1, 7):
+            v = F.get('loot%sitem%d' % (hand, j))
+            w = float((F.get('chancetoequip%sitem%d' % (hand, j)) or [0])[0] or 0)
+            if v and v[0] and w > 0:
+                got = _weapon_mix(R, key_of(v[min(d, len(v) - 1)]), level)
+                if got is not None:
+                    for f, x in got[0].items():
+                        acc[f] += w * x
+                    for c, x in got[1].items():
+                        cw[c] += w * x
+                    tot += w
+        if tot:
+            return {f: [x / tot] for f, x in acc.items()}, min(1.0, ch / 100.0), max(cw, key=cw.get)
+    return None, 0.0, ''
+
+
+def attack_seconds(pet, table, pak):
+    """seconds per basic attack: the median of its attack animations at its attack speed with the pak's (basic_dps)"""
+    from soul_anims import ANIMS
+    F = anim_view(pet, table)
+    g = lambda k, d=0.0: float(((F.get(k.lower()) or (None, [d]))[1] or [d])[-1] or d)
+    speed = g('characterAttackSpeed', 1.0) * (1 + pak.get('characterAttackSpeedModifier', 0.0) / 100.0)
+    times = []
+    for low, (name, vals) in F.items():
+        m = ANIM_SET.match(name)
+        if m and m.group(2) == 'Attack' and vals and isinstance(vals[0], str) and vals[0]:
+            info = ANIMS.get(vals[0].lower().replace('/', BS))
+            if info and info[1] > 0:
+                sp = float(((F.get(('%sAttackAnimSpeed%s' % (m.group(1), m.group(3))).lower()) or (None, [1.0]))[1]
+                            or [1.0])[0] or 1.0)
+                times.append(info[1] / max(sp * speed, 1e-3))
+    return max(median(times) if times else 1.2, 0.2)
+
+
+# skills whose own record a creature carries as standing stats (monster_stats.py of the balance study)
+STANDING = ('skill_passive', 'skill_buffselftoggled', 'skill_passiveshield', 'skill_mastery')
+
+
+def strike_model(R, pet, pak, ce, own_ns, d=2):
+    """1.8.5: the soul's basic attack on a typical Legendary monster -> (E, info): E(power_fields) is the expected damage
+    of one strike with the soul power passive's fields (power_fields(m), None = no factor). Its weapon (weapon_mix; the hand where it carries none) or hand hit, its attack
+    skill, standing passives and toggles at their Legendary level, the pet pak; strength / dexterity / intelligence
+    into the game's equations, everything through hero_power.process - pierce from the physical ratio takes the
+    physical AND the pierce modifiers, as in the game. Then hit chance and crit from its offensive ability, the
+    monster's resistances and armour (hero_power.swing_damage, TYPICAL_MONSTER). m enters as the soul power passive
+    (power_fields). Spells and special attacks are not counted (as for the hero)."""
+    import hero_power as H
+    F = fields(pet)
+    lv = lambda vals: int(float(vals[min(d, len(vals) - 1)] or 0)) if vals else 0
+    val = lambda r, f, i: float((r.get(f) or [0])[min(i, len(r.get(f) or [0]) - 1)] or 0)
+    srcs = [(F, d), (pak, 0)]
+    stores = []
+    level = lv(F.get('charlevel')) or 1
+    for n in range(1, 34):
+        nm = (F.get('skillname%d' % n) or [''])[0]
+        if not nm or key_of(nm).startswith(own_ns) or key_of(nm) not in R:
+            continue
+        r = fields(R.peek(key_of(nm)) if hasattr(R, 'peek') else R[key_of(nm)])
+        cls = ((r.get('class') or [''])[0] or '').lower()
+        sl = lv(F.get('skilllevel%d' % n))
+        if sl <= 0:
+            continue
+        sl = max(1, min(sl, int(max(val(r, 'skillultimatelevel', 0), val(r, 'skillmaxlevel', 0))) or sl))
+        if cls == 'skill_buffradiustoggled' and (r.get('buffskillname') or [''])[0]:
+            bk = key_of(r['buffskillname'][0])
+            r = fields(R.peek(bk) if hasattr(R, 'peek') else R[bk]) if bk in R else None
+            if r is None or H.is_debuff(r):
+                continue
+        elif cls not in STANDING:
+            continue
+        srcs.append((r, sl - 1))
+        st = H.Store('passive')
+        st.load(r, sl, 'other', False, 'passive')
+        stores.append(st)
+    tot = lambda f: sum(val(r, f, i) for r, i in srcs)
+    attr = lambda a: max(0.0, tot(a) + abs(tot(a)) * tot(a + 'modifier') / 100.0)
+    STR, DEX, INT = attr('characterstrength'), attr('characterdexterity'), attr('characterintelligence')
+    oa = (tot('characteroffensiveability') + DEX) * (1 + tot('characteroffensiveabilitymodifier') / 100.0)
+    atk = (F.get('attackskillname') or [''])[0]
+    if atk and key_of(atk) in R:
+        ar = fields(R.peek(key_of(atk)) if hasattr(R, 'peek') else R[key_of(atk)])
+        st = H.Store('attack skill')
+        st.load(ar, max(1, min(level, int(max(val(ar, 'skillultimatelevel', 0), val(ar, 'skillmaxlevel', 0))) or level)),
+                'other', False, 'attackSkill')
+        stores.append(st)
+    st = H.Store('pak')
+    st.load(pak, 1, 'other', False, 'pak')
+    stores.append(st)
+    common = [e for s in stores for e in s.evaluate()]
+    eq = H.Eq(STR, DEX, INT, level, ce)
+    hand = H.Store('hand')
+    hmin, hmax = val(F, 'handhitdamagemin', d), val(F, 'handhitdamagemax', d)
+    hand.load({'offensivephysicalmin': [hmin], 'offensivephysicalmax': [max(hmin, hmax)]}, 1, 'weapon', True, 'base:hand')
+    syn, wc, wcls = weapon_mix(R, pet, d)
+    hits = [(1.0 - wc, hand.evaluate(), False)]
+    if syn is not None:
+        w = H.Store('weapon')
+        w.load(syn, 1, 'weapon', True, 'base:weapon')
+        hits.append((wc, w.evaluate(), wcls in PROJECTILE_WEAPON))
+
+    def E(power_fields=None):
+        extra = []
+        if power_fields:
+            p = H.Store('soul power')
+            p.load(power_fields, 1, 'other', False, 'soulpower')
+            extra = p.evaluate()
+        e = 0.0
+        for share, base, proj in hits:
+            if share <= 0:
+                continue
+            total, parts, amod, dmod = H.process(base + common + extra, eq, 0.0)
+            e += share * H.swing_damage({'parts_avg': parts, 'oa': oa, 'projectile': proj}, H.TYPICAL_MONSTER, ce)[0]
+        return e
+    return E, {'oa': oa, 'str': STR, 'weapon': wcls if syn is not None else '', 'weapon_share': wc}
+
+
 def basic_dps(pet, table, pak, eq, weapon=(0.0, 0.0)):
     """1.7.0: damage per second of a soul's basic attack, for SoulDamage: its hand hit with the pet pak's Legendary
     physical bonus and its strength (combatequations physicalDamageEquation), over its attack time (its attack
     animations at its attack speed with the pak's). 1.8.3: weapon = weapon_hit() - a creature strikes with the weapon
     it carries, not the hand (0 for one with neither).
-    Only the median of the bosses is used: every soul gets the same factor and keeps its strength among the others."""
-    from soul_anims import ANIMS
+    Only the median of the bosses is used: every soul gets the same factor and keeps its strength among the others.
+    1.8.5: only the hand hit for the pace with the hero (paced_dps); SoulDamage measures strike_model"""
     F = anim_view(pet, table)
     g = lambda k, d=0.0: float(((F.get(k.lower()) or (None, [d]))[1] or [d])[-1] or d)
     hit = (g('handHitDamageMin') + g('handHitDamageMax')) / 2.0
@@ -397,18 +597,22 @@ def basic_dps(pet, table, pak, eq, weapon=(0.0, 0.0)):
         hit = float(eval(eq.replace('^', '**'), {'__builtins__': {}}, env))
     except Exception:
         pass
-    speed = g('characterAttackSpeed', 1.0) * (1 + pak.get('characterAttackSpeedModifier', 0.0) / 100.0)
-    times = []
-    for low, (name, vals) in F.items():
-        m = ANIM_SET.match(name)
-        if m and m.group(2) == 'Attack' and vals and isinstance(vals[0], str) and vals[0]:
-            info = ANIMS.get(vals[0].lower().replace('/', BS))
-            if info and info[1] > 0:
-                sp = float(((F.get(('%sAttackAnimSpeed%s' % (m.group(1), m.group(3))).lower()) or (None, [1.0]))[1]
-                            or [1.0])[0] or 1.0)
-                times.append(info[1] / max(sp * speed, 1e-3))
-    t = median(times) if times else 1.2
-    return hit / max(t, 0.2)
+    return hit / attack_seconds(pet, table, pak)
+
+
+def solve(fn, target, lo, hi, steps=32):
+    """1.8.5: x in [lo, hi] where the increasing fn(x) reaches target (lo or hi when it is out of reach)"""
+    if fn(lo) >= target:
+        return lo
+    if fn(hi) <= target:
+        return hi
+    for _ in range(steps):
+        mid = (lo + hi) / 2.0
+        if fn(mid) < target:
+            lo = mid
+        else:
+            hi = mid
+    return lo
 
 
 def floor2(x):
@@ -574,12 +778,15 @@ REACH_SLACK = 1.1      # a class may reach 10 % past the skill: the Chimera's 17
 # multiplies the pet pak's own bonus too: +x % = (factor - 1) x (100 + pak %)
 PET_PAK = 'records\\game\\petgamebalanceattributes.dbr'
 COMBAT_EQ = 'records\\game\\combatequations.dbr'
-DAMAGE_FIELDS = ('offensivePhysicalModifier', 'offensivePierceModifier', 'offensiveColdModifier', 'offensiveFireModifier',
+# 1.8.5: no offensivePierceModifier - pierce from a weapon's ratio takes the physical modifier already (and the pierce
+# one on top: the factor went in squared); plain pierce damage of a skill keeps its own
+DAMAGE_FIELDS = ('offensivePhysicalModifier', 'offensiveColdModifier', 'offensiveFireModifier',
                  'offensiveLightningModifier', 'offensivePoisonModifier', 'offensiveLifeModifier',
                  'offensiveSlowPhysicalModifier', 'offensiveSlowBleedingModifier', 'offensiveSlowColdModifier',
                  'offensiveSlowFireModifier', 'offensiveSlowLightningModifier', 'offensiveSlowPoisonModifier',
                  'offensiveSlowLifeModifier')
 DAMAGE_MAX = 200.0
+STRIKE_COUNTS = 0.1    # 1.8.5: a basic attack below 10 % of the median soul's is a caster's - no pace cut of its factor
 # 1.7.4 (owner 18.10, playing Difficulty=power: monster life x19, damage x3.25): "Talos gives in to the sirens' slows",
 # "Cerberus falls off fast", "I kill Typhon for ages and my Typhon soul falls apart from the other mobs".
 # - boss_conversionimmunity is the boss's OWN defence (69 of 78 bosses: immune to stun, freeze, sleep, fear, confusion,
@@ -649,6 +856,7 @@ class Souls(object):
     def __init__(self, b, hero_level=0, hero=''):
         self.b, self.R, self.H, self.hero = b, b.R, int(hero_level or 0), hero
         _WEAPON_AVG.clear()                     # 1.8.3: weapon tables as this database has them (tweaks)
+        _WEAPON_MIX.clear()
         self.st = settings()
         self.ns = b_ns() + SUB
         self.peek = getattr(b.R, 'peek', None) or b.R.__getitem__   # read-only: no cache
@@ -948,6 +1156,7 @@ class Souls(object):
         for f in live:
             f['name'] = {lg: self.full(f, lg) for lg in ('ru', 'en')}
             self.make(f)
+        self.live = live                         # 1.8.5: for the damage survey of a dev build (strike models)
         self.power(live)
         self.guard(live)
         self.pace(live)
@@ -1274,8 +1483,13 @@ class Souls(object):
         pak, eq = self.pak()[2], self.phys_eq()
         wpn = weapon_hit(self.R, pet)          # 1.8.3: a soul with a weapon strikes with it
         f['weapon'] = wpn
+        # 1.8.5: a weapon from a LootItemTable_DynWeight counts too (weapon_mix; weapon_hit sees lootNameN only)
+        armed = wpn[0] > 0 or weapon_mix(self.R, pet)[0] is not None
+        # 1.8.5: seconds per strike at the hero's pace (t) and at its own (t_own: what SoulDamage measures - a weapon
+        # soul's strikes are not lightened, power() takes the pace back through its factor)
+        f['t'] = f['t_own'] = attack_seconds(pet, anm, pak)
         dps = basic_dps(pet, anm, pak, eq, wpn)
-        if dps <= 0 or (self.atk_factor <= 1.0 + 1e-9 and self.cast_factor <= 1.0 + 1e-9):
+        if (dps <= 0 and not armed) or (self.atk_factor <= 1.0 + 1e-9 and self.cast_factor <= 1.0 + 1e-9):
             return dps
         p0, a0 = copy.deepcopy(pet), copy.deepcopy(anm) if anm is not None else None
         for fixes, pick in ((f['fixes'], 1), (f['fixes0'], 2)):      # undo the paced fixes, apply the plain ones
@@ -1287,16 +1501,18 @@ class Souls(object):
                 else:
                     setv(a0 if in_tab else p0, spname, up(v), 1)
         dps0 = basic_dps(p0, a0, pak, eq, wpn)
+        if armed:
+            # 1.8.3: a weapon cannot be made lighter for one soul (its item is the game's) - the soul's damage factor
+            # takes the speed-up back instead (power(): solved on t / t_own)
+            t0 = attack_seconds(p0, a0, pak)
+            if t0 > f['t'] * 1.001:
+                f['t_own'], f['pace_r'] = t0, f['t'] / t0
+                notes.append('pace with the hero: strikes x%g, casts x%g (within SoulSpeedMax); fights with a weapon - '
+                             'damage factor x%.2f so its damage per second stays as at its own pace' % (
+                                 self.atk_factor, self.cast_factor, f['pace_r']))
+            return dps0 or dps
         if dps0 <= 0 or dps <= dps0 * 1.001:
             return dps0 or dps
-        if wpn[0] > 0:
-            # 1.8.3: a weapon cannot be made lighter for one soul (its item is the game's) - the soul's damage factor
-            # takes the speed-up back instead (power(): factor x pace_r)
-            f['pace_r'] = dps0 / dps
-            notes.append('pace with the hero: strikes x%g, casts x%g (within SoulSpeedMax); fights with a weapon - '
-                         'damage factor x%.2f so its damage per second stays as at its own pace' % (
-                             self.atk_factor, self.cast_factor, f['pace_r']))
-            return dps0
         hands = [(fld, [float(x or 0) for x in getv(pet, fld) or []]) for fld in ('handHitDamageMin', 'handHitDamageMax')]
         r = 1.0
         for _ in range(4):               # damage = (hand x a + b) / time: a few steps to land on dps0
@@ -1388,19 +1604,39 @@ class Souls(object):
         r = self.R.get(key_of(COMBAT_EQ))
         return (get1(r, 'physicalDamageEquation', '') or 'physicalDamageDV') if r is not None else 'physicalDamageDV'
 
+    def power_fields(self, m):
+        """the soul power passive's Legendary fields for factor m (power_record level 3) - strike_model's input"""
+        pak = self.pak()[2]
+        return {fld.lower(): [round((m - 1.0) * (100.0 + pak.get(fld, 0.0)), 1)] for fld in DAMAGE_FIELDS} \
+            if m > 1.0 + 1e-9 else None
+
     def power(self, live):
-        """SoulDamage: one damage factor for every soul from the hero's character-window DPS (DAMAGE_FIELDS)"""
+        """SoulDamage: one damage factor for every soul from the hero's damage per second (DAMAGE_FIELDS).
+        1.8.5 (owner 22.10: the Faceless One "kills nearly everything with one blow, and I am weaker" - after 1.8.3 he
+        still struck like the hero, 46k on a common Legendary monster against Nikton's 52k): both sides are measured on
+        a typical Legendary monster - the hero by hero_power.combat_strength (B.HERO_DPS), every soul's basic attack by
+        strike_model at its own pace (crit, resistances, armour, its passives; a weapon soul by its weapon, 1.8.3) -
+        and the factor of each soul is solved on that measure, so the corridor holds whatever its damage is made of.
+        The factor no longer goes into the pierce modifier: the game gives pierce from a weapon's ratio the physical
+        AND the pierce modifier, and the souls with swords and spears got it squared (the Faceless One x20 x20)."""
         import build_companions as B
         hero = float(getattr(B, 'HERO_DPS', 0) or 0)
         share = self.st['souldamage']
-        dps = [f['dps'] for f in live if f['kind'] == 'boss' and f.get('dps', 0) > 0]
-        med = median(dps) if dps else 0.0
+        ce = fields(self.peek(key_of(COMBAT_EQ))) if key_of(COMBAT_EQ) in self.R else None
+        pak = {k.lower(): [v] for k, v in self.pak()[2].items()}
+        for f in live:
+            f['E'], f['strike'] = strike_model(self.R, self.R[f['pet_key']], pak, ce, self.ns)
+        own = lambda f, m: f['E'](self.power_fields(m)) / f['t_own']        # its basic attack per second, own pace
+        bosses = [f for f in live if f['kind'] == 'boss']
+        med_at = lambda m: median([own(f, m) for f in bosses]) if bosses else 0.0
         m = 1.0
-        if share > 0 and hero > 0 and med > 0:
-            m = float('%.2g' % max(1.0, min(DAMAGE_MAX, share / 100.0 * hero / med)))
-        self.ledger['damage'] = {'hero_dps': round(hero), 'median_soul_dps': round(med, 1), 'share': share, 'factor': m}
-        log('  souls: damage x%g (SoulDamage %g%% of the hero\'s %.0f DPS, the median boss soul\'s basic attack %.0f)'
-            % (m, share, hero, med))
+        if share > 0 and hero > 0 and med_at(1.0) > 0:
+            m = float('%.2g' % solve(med_at, share / 100.0 * hero, 1.0, DAMAGE_MAX))
+        med = med_at(m)
+        self.ledger['damage'] = {'hero_dps': round(hero), 'median_soul_dps': round(med, 1), 'share': share, 'factor': m,
+                                 'measure': 'strike_model'}
+        log('  souls: damage x%g (SoulDamage %g%% of the hero\'s %.0f per second: the median boss soul\'s basic attack '
+            '%.0f per second on a Legendary monster)' % (m, share, hero, med))
         if m <= 1.0 + 1e-9:
             return
         shared = None
@@ -1408,31 +1644,46 @@ class Souls(object):
             # the hardest hitters are held like life (CORRIDOR): a boss's basic attack at most 1.5 x the median soul's,
             # a hero monster's 1.0 x - Cerberus' bite (x3.5 the median) would hit harder than the hero himself. No
             # floor: Arachne's hand is weak by design, her poison and her spiders do the work.
-            # 1.8.3: dps counts the weapon a soul fights with; pace_r (a weapon soul striking at the hero's pace) is
-            # taken off the factor - the hand of such a soul was lightened, its weapon never was
             hi = CORRIDOR[f['kind']][1]
             mi = m
-            if f.get('dps', 0) > hi * med:
-                mi = m * hi * med / f['dps']
-            pr = f.get('pace_r', 1.0)
+            if own(f, m) > hi * med:
+                mi = solve(lambda x: own(f, x), hi * med, 1.0, m)
+            # 1.8.3: a weapon soul striking at the hero's pace (t < t_own) takes the pace back through its factor - its
+            # weapon cannot be lightened like a hand: the same damage per second as at its own pace
+            me = mi
+            # (never below the 1.8.3 rule factor x t / t_own. And only for a soul whose strike counts: a caster's
+            # staff strike is a few points next to its spells - a pace cut would only halve the spells, which 1.7.5
+            # leaves alone: skills keep their damage per cast and just wind up faster)
+            if f['t'] < f['t_own'] - 1e-9 and own(f, mi) >= STRIKE_COUNTS * med:
+                want = f['E'](self.power_fields(mi)) * f['t'] / f['t_own']
+                me = max(mi * f['t'] / f['t_own'], solve(lambda x: f['E'](self.power_fields(x)), want, 1.0, mi))
+                # 1.8.6 (owner 23.10: the start stopped - 27 hero souls 7-34 % past their corridor once Nikton's pace
+                # rose, strikes x2.66): that floor scales the factor, not the damage - the part of a weapon strike the
+                # factor does not reach (pierce from the weapon's own ratio) keeps its full size at the faster pace.
+                # The corridor at the hero's pace wins over the floor (never below x1: the soul's own damage)
+                fast = lambda x: f['E'](self.power_fields(x)) / f['t']
+                if fast(me) > hi * med:
+                    me = max(1.0, min(me, solve(fast, hi * med, 1.0, me)))
             # rounded once and DOWN to two digits when held: rounding twice to nearest let one soul past its corridor
-            me = m if abs(mi * pr - m) < 1e-9 else max(1.0, floor2(mi * pr))
+            me = m if abs(me - m) < 1e-9 else max(1.0, floor2(me))
             if abs(me - m) < 1e-9:
                 shared = shared or self.power_record(self.ns + 'soul_power.dbr', m)
                 r = shared
             else:
                 r = self.power_record(self.ns + '%s_soulpower.dbr' % f['sid'], me)
             s = self.ledger['souls'][f['sid']]
-            s['basic'], s['pace_r'] = round(f.get('dps', 0), 2), round(pr, 4)
+            hit = f['E'](self.power_fields(me))
+            s['basic'], s['hit'], s['pace_r'] = round(hit / f['t'], 1), round(hit, 1), round(f['t'] / f['t_own'], 4)
             if not self.add_skill(f, r):
                 s['notes'].append('no free skill slot: damage not raised')
                 continue
             s['power'], s['damage'] = key_of(r['name']), me
-            s['notes'].append('damage x%g: basic attack ~%.0f per second (%.0f%% of the hero\'s)%s%s%s' % (
-                me, f.get('dps', 0) * mi, 100.0 * f.get('dps', 0) * mi / hero,
-                ' with its weapon' if (f.get('weapon') or (0, 0))[0] > 0 else '',
-                ', held at x%.1f the median soul\'s' % hi if mi < m - 1e-9 else '',
-                ', x%.3g before the pace with the hero' % mi if abs(me - mi) > 1e-9 else ''))
+            s['notes'].append('damage x%g: basic attack %.0f per strike, %.0f per second on a Legendary monster (%.0f%% of '
+                              'the hero\'s)%s%s%s' % (
+                                  me, hit, hit / f['t'], 100.0 * hit / f['t'] / hero,
+                                  ' with its weapon' if f['strike']['weapon'] else '',
+                                  ', held at x%.1f the median soul\'s' % hi if mi < m - 1e-9 else '',
+                                  ', x%.3g before the pace with the hero' % mi if abs(me - mi) > 1e-9 else ''))
 
     def passive(self, name):
         """an empty Skill_Passive of ours (the builder's plain passive with every stat taken out, weapon flags kept: it
@@ -1758,6 +2009,11 @@ def check(R, baseR, ledger, log=print):
     ctl |= {key_of(B.NS + SUB + 'controller_static%s.dbr' % k) for k in ('', '_aggressive', '_defensive')}
     dmg = ledger.get('damage') or {}
     gd = ledger.get('guard') or {}
+    # 1.8.5: what strike_model needs to measure a soul again - the pet pak on Legendary, the combat equations
+    pp = R.get(key_of(PET_PAK))
+    pak0 = {vn: float(vals[min(12, len(vals) - 1)]) for vn, vt, vals in (pp['vars'] if pp else []) if vt in (0, 1) and vals}
+    pak1 = {k.lower(): [v] for k, v in pak0.items()}
+    ce = fields(R.peek(key_of(COMBAT_EQ)) if hasattr(R, 'peek') else R[key_of(COMBAT_EQ)]) if key_of(COMBAT_EQ) in R else None
     for sid, s in ledger['souls'].items():
         pet = R.get(s['pet'])
         if pet is None:
@@ -1871,11 +2127,20 @@ def check(R, baseR, ledger, log=print):
                 # level 1 = Normal, where the pet pak adds nothing: exactly (factor - 1) x 100 %
                 bad.append('soul %s: soul power x%g, its passive %s' % (sid, s['damage'], getv(pr, 'offensivePhysicalModifier')))
             # 1.8.3: its basic attack (weapon counted) at the hero's pace x its factor within its corridor - the
-            # weapon souls ran past it unseen (the Faceless One at half the hero's DPS)
-            cap = CORRIDOR[s['kind']][1] * dmg.get('median_soul_dps', 0) * dmg['factor']
-            real = s.get('basic', 0) / max(s.get('pace_r', 1.0), 1e-9) * s['damage']
-            if s['damage'] > 1.0 + 1e-9 and cap > 0 and real > cap * 1.06:
-                bad.append('soul %s: basic attack %.0f per second above its corridor %.0f' % (sid, real, cap))
+            # weapon souls ran past it unseen (the Faceless One at half the hero's DPS). 1.8.5: measured again here
+            # on the records (strike_model with the passive's Legendary values, at the hero's pace) - the 1.8.3
+            # check read the build's own estimate, and the Faceless One passed it striking like the hero
+            elif pr is not None:
+                if getv(pr, 'offensivePierceModifier'):
+                    bad.append('soul %s: soul power %s raises pierce - weapon pierce would take the factor twice' % (
+                        sid, s['power']))
+                pf = {fld.lower(): [float((getv(pr, fld) or [0])[-1] or 0)] for fld in DAMAGE_FIELDS}
+                hit = strike_model(R, pet, pak1, ce, B.NS + SUB)[0](pf)
+                real = hit / attack_seconds(pet, anim_table(R, pet), pak0)
+                cap = CORRIDOR[s['kind']][1] * dmg.get('median_soul_dps', 0)
+                if s['damage'] > 1.0 + 1e-9 and cap > 0 and real > cap * 1.06:
+                    bad.append('soul %s: basic attack %.0f per second on a Legendary monster above its corridor %.0f'
+                               % (sid, real, cap))
         left_ai = ai_fixes(R, pet)
         if left_ai:
             bad.append('soul %s: AI slots shaking the air / wired twice: %s' % (sid, left_ai[:2]))

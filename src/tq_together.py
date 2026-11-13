@@ -6,6 +6,7 @@ changed), installs them into the game and starts Titan Quest.
   TQTogether.exe --uninstall   restore the original game files
   TQTogether.exe --rebuild     rebuild even if nothing changed
   TQTogether.exe --no-launch   do not start the game afterwards
+  TQTogether.exe --atelier     new looks for items in the TQVault vault "Ателье" / "Atelier" (atelier.py, 1.9.0)
 """
 import os, sys, re, json, glob, time, hashlib, traceback, subprocess
 
@@ -114,15 +115,19 @@ def fingerprint(base_arz):
     return h.hexdigest()
 
 
-def choose_hero(args, base_arz=None):
+def choose_hero(args, base_arz=None, hero=None):
     """Which hero is about to be played (Enter = the one saved last) and how strong the monsters get. TQTogether.ini:
     Difficulty=party (1.4.0, the default): every companion the hero can summon - a completed eidolon in one of his worn
       rings - counts as CompanionPlayers (default 1) more players, and monsters, champions and bosses get the game's own
       co-op scaling for that party size on every difficulty (Legendary: +50 % life per player, bosses +100 %).
-    Difficulty=power (AutoLife=1 in older ini files): Legendary monster life from the party's damage per second (the
-      character window's number, hero_power): x = (dps / AutoLifeBase) ^ AutoLifePower, between 1 and AutoLifeMax,
-      damage x^AutoDamagePower, bosses x AutoLifeBoss on top - for heroes geared far beyond the game's own curve.
-      Life.<hero>=<x> sets x by hand.
+    Difficulty=power (AutoLife=1 in older ini files): Legendary monster life from the party's damage per second:
+      x = (dps / AutoLifeBase) ^ AutoLifePower, between 1 and AutoLifeMax, damage x^AutoDamagePower, bosses
+      x AutoLifeBoss on top - for heroes geared far beyond the game's own curve. Life.<hero>=<x> sets x by hand.
+      1.8.5: dps = hero_power.combat_strength on the database with the tweaks - damage against a typical Legendary
+      monster with crits, on-hit buffs and weapon-pool attacks (the character window's number missed those: a hero
+      with Battle Rage hits 4.5x his window), AutoLifeBase 960 -> 3200 for that scale.
+      1.8.6: the hero's own summons hit x^AutoPetPower (default 1) harder on Legendary and take the monsters' extra
+      damage in life and defence - they kill and last as on the game's Legendary (0 = summons as in the game).
     Difficulty=off: vanilla monsters. The question is asked whenever there is more than one hero (his pet bonuses are
     cancelled on the companions, 1.2.0)."""
     import build_companions as B
@@ -192,24 +197,30 @@ def choose_hero(args, base_arz=None):
     per = min(5.0, max(0.0, num('companionplayers', 1.0)))
     extra = lambda h: min(5.0, (len(members(h)) - 1 + souls_of(h)) * per)
     soul_note = lambda h: ' + %d soul / душа' % souls_of(h) if souls_of(h) else ''
-    if mode == 'power':
-        import hero_power as H
-        if base_arz:
-            H.use_db(base_arz)
-        measured = {}
+    import hero_power as H
+    if base_arz:
+        H.use_db(base_arz, tweaked=True)        # 1.8.5: the database the game will run
+    measured, said = {}, []
+    cache = os.path.join(paths.data_dir(), 'cache', 'power.json')
 
-        def dps(p):
-            if p not in measured:
-                try:
-                    measured[p] = H.strength(p)
-                except Exception as e:                   # a build the calculator does not know: counts as nothing
-                    log('  (damage of %s not measured: %s / урон не посчитан)' % (os.path.basename(os.path.dirname(p)), e))
-                    measured[p] = 0
-            return measured[p]
-        base, power, cap = num('autolifebase', 960), num('autolifepower', 0.65), num('autolifemax', 50)
+    def fight(p):
+        """hero_power.combat_strength (cached) or None"""
+        if p not in measured:
+            try:
+                measured[p] = H.measure(p, cache)
+            except Exception as e:                       # a build the calculator does not know: counts as nothing
+                log('  (damage of %s not measured: %s / урон не посчитан)' % (os.path.basename(os.path.dirname(p)), e))
+                measured[p] = None
+            if H.TWEAK_ERROR and not said:
+                said.append(1)
+                log('  (a tweak does not apply - damage measured without the tweaks / твик не встаёт: %s)' % H.TWEAK_ERROR)
+        return measured[p]
+    dps = lambda p: fight(p)['dps'] if fight(p) else 0
+    if mode == 'power':
+        base, power, cap = num('autolifebase', 3200), num('autolifepower', 0.65), num('autolifemax', 50)
         if base <= 0:           # 1.8.1: 0 divided, a negative base gave a complex number
-            log('  ! TQTogether.ini: AutoLifeBase must be above 0 - using 960')
-            base = 960.0
+            log('  ! TQTogether.ini: AutoLifeBase must be above 0 - using 3200')
+            base = 3200.0
 
         def life(h):
             try:
@@ -224,13 +235,26 @@ def choose_hero(args, base_arz=None):
         show = lambda h: '%s -> monster life on Legendary x%g / здоровье монстров на Легенде x%g%s' % (
             ' + '.join('%s %.0f' % (n, dps(p)) for n, p in members(h)), life(h), life(h),
             ', вручную' if h.lower() in lives else '')
-        note = '   (numbers = damage per second as in the character window / урон в секунду, как в окне персонажа)'
+        note = ('   (numbers = damage per second against a typical Legendary monster: crits, on-hit buffs and weapon-pool '
+                'attacks in, spells out\n    урон в секунду по обычному монстру Легенды: с критом, баффами на удар и '
+                'приёмами оружия, без заклинаний)')
+
+        def breakdown(n, f):
+            """1.8.5: where a hero's number comes from (the log and build\\companions.txt)"""
+            if not f:
+                return '  %s: not measured / не посчитан' % n
+            pct = lambda a, b: '%+.0f%%' % (100.0 * (a / b - 1)) if b > 0 else '-'
+            return ('  %s: window / окно %d/s; per hit on a Legendary monster / за удар по монстру Легенды %d (hit / '
+                    'попадание %.0f%%, crit / крит x%.2f, on-hit buffs / баффы на удар %s, weapon pool / приёмы %s) x '
+                    '%.2f/s = %d/s' % (n, f['window_dps'], f['swing'], 100 * f['hit'], f['crit'],
+                                       pct(f['buff_swing'], f['window_swing']), pct(f['swing'], f['buff_swing']),
+                                       f['swings'], f['dps']))
     else:
         show = lambda h: '%s%s -> %s' % (' + '.join(n for n, _ in members(h)), soul_note(h),
                                         'vanilla monsters / обычные монстры' if mode == 'off' or extra(h) <= 0 else
                                         'monsters as for %g players / монстры как для %g игроков' % (1 + extra(h), 1 + extra(h)))
         note = None
-    forced = next((a.split('=', 1)[1] for a in sys.argv[1:] if a.lower().startswith('--hero=')), None)
+    forced = hero or next((a.split('=', 1)[1] for a in sys.argv[1:] if a.lower().startswith('--hero=')), None)
     pick = next((h for h in heroes if forced and h.lower() == forced.lower()), None)
     if pick is None and len(heroes) == 1:
         pick = heroes[0]
@@ -250,25 +274,69 @@ def choose_hero(args, base_arz=None):
         B.HERO_LEVEL = int(B.read_char(paths_of[pick])['level'])
     except Exception:
         B.HERO_LEVEL = 0
-    try:                                       # 1.7.0: ... and hit a share of his damage per second (SoulDamage)
-        import hero_power as HP
-        if base_arz:
-            HP.use_db(base_arz)
-        B.HERO_DPS = float(HP.strength(paths_of[pick]) or 0)
-    except Exception as e:                     # a build the calculator does not know: the souls keep the boss's damage
-        log('  (damage of %s not measured: %s / урон не посчитан)' % (pick, e))
-        B.HERO_DPS = 0.0
+    # 1.7.0: ... and hit a share of his damage per second (SoulDamage). 1.8.5: the same measure as the difficulty -
+    # on a typical Legendary monster, with the tweaks (was the character window on the clean database); a build the
+    # calculator does not know: 0, the souls keep the boss's damage
+    B.HERO_DPS = float(dps(paths_of[pick]))
     if mode == 'power':
         B.HERO_LIFE = life(pick)
+        team = [(n, fight(p)) for n, p in members(pick)]
         B.HERO_BOSS = max(0.1, num('autolifeboss', 1))
         B.HERO_DAMAGE = round(max(1.0, B.HERO_LIFE) ** max(0.0, num('autodamagepower', 0.3)), 2)
-        log('Hero / Герой: %s (DPS / урон в секунду: %s), monster life x%g, damage x%g' % (
-            pick, ' + '.join('%s %.0f' % (n, dps(p)) for n, p in members(pick)), B.HERO_LIFE, B.HERO_DAMAGE))
+        B.PET_POWER = max(0.0, num('autopetpower', 1.0))     # 1.8.6: the hero's summons keep pace (hero_pets)
+        head = 'Hero / Герой: %s (damage per second / урон в секунду: %s), monster life x%g%s, bosses x%g, damage x%g' % (
+            pick, ' + '.join('%s %d' % (n, f['dps'] if f else 0) for n, f in team), B.HERO_LIFE,
+            ' (Life.%s, by hand / вручную)' % pick if pick.lower() in lives else '', B.HERO_LIFE * B.HERO_BOSS,
+            B.HERO_DAMAGE)
+        if B.PET_POWER > 0:
+            px = round(max(1.0, B.HERO_LIFE) ** B.PET_POWER, 2)
+            head += ', pets x%g / питомцы x%g' % (px, px)
+        B.DIFFICULTY_NOTE = [head] + [breakdown(n, f) for n, f in team]
+        for line in B.DIFFICULTY_NOTE:
+            log(line)
         B.PARTY_EXTRA = 0.0
     else:
         B.PARTY_EXTRA = round(extra(pick), 3) if mode == 'party' else 0.0
-        B.HERO_LIFE, B.HERO_BOSS, B.HERO_DAMAGE = 1.0, 1.0, 1.0
-        log('Hero / Герой: %s' % show(pick))
+        B.HERO_LIFE, B.HERO_BOSS, B.HERO_DAMAGE, B.PET_POWER = 1.0, 1.0, 1.0, 0.0
+        B.DIFFICULTY_NOTE = ['Hero / Герой: %s' % show(pick)]
+        log(B.DIFFICULTY_NOTE[0])
+
+
+def build_install(inst, base, args, force=False):
+    """rebuild (when anything changed, or force) + self-check + install -> True; a failed self-check stops here"""
+    fp = fingerprint(base)
+    # 1.8.1: texts that failed to go in last time for want of ArchiveTool are tried again once it is there
+    texts_ok = not (inst.state.get('texts_no_tool') and os.path.exists(inst.tool))
+    if not force and '--rebuild' not in args and inst.state.get('fingerprint') == fp and inst.installed_intact() \
+            and texts_ok:
+        log('Nothing changed since the last start - companions are up to date. / Изменений нет, соратники актуальны.')
+        return True
+    log('Building companions from your saves - please do not close this window ...')
+    log('Собираю соратников из сохранений - пожалуйста, не закрывайте это окно ...')
+    import build_companions as B, verify_companions
+    B.LOG = LOG_LINES
+    b = B.Builder(base)
+    b.run()
+    problems = verify_companions.check(b.db.arz.records, base, log, touched=b.tweak_touched, gear=b.gear_ledger,
+                                       souls=b.soul_ledger)
+    problems += verify_companions.string_table(os.path.join(B.OUT, 'database.arz'))
+    if problems:
+        log('\n'.join(problems))
+        raise SystemExit('Self-check failed - nothing was installed. / Самопроверка не прошла, ничего не установлено.')
+    inst.install(os.path.join(B.OUT, 'database.arz'), B.text_payload('ru'), B.text_payload('en'))
+    inst.state['fingerprint'] = fingerprint(base)     # the build rewrote the registry
+    inst.state['hero'] = B.HERO_NAME                  # 1.9.0: the atelier rebuilds for the same hero
+    inst.save_state()
+    if paths.frozen():                                 # the copy in the game folder is what counts
+        try:
+            os.remove(os.path.join(B.OUT, 'database.arz'))
+        except OSError:
+            pass
+    names = [r[0] for r in b.report]
+    log('Companions / Соратники: %s' % (', '.join(names) if names else
+        'none yet (a character needs level 20 and a mastery) / пока нет (нужен 20-й уровень и мастерство)'))
+    log('Report / Отчёт: %s' % os.path.join(B.OUT, 'companions.txt'))
+    return True
 
 
 def single_instance():
@@ -342,8 +410,27 @@ def main():
     if '--uninstall' in args:
         log('\nThis restores the original game files. Eidolons set into items may disappear from them.')
         log('Это вернёт оригинальные файлы игры. Эйдолоны, вставленные в вещи, могут из них пропасть.')
+        looks, unchecked = {}, None
+        try:                                    # 1.9.0: items with a new look live on our records
+            import transmog
+            looks = transmog.referenced()
+        except Exception as e:                  # 1.9.1: said, and a separate confirmation (was swallowed)
+            unchecked = e
+        if unchecked is not None:
+            log('\nCould not check the saves and TQVault vaults for items from the Atelier (%s). Items with a new look '
+                'would DISAPPEAR without TQ Together.' % unchecked)
+            log('Не удалось проверить сохранения и хранилища TQVault на вещи из «Ателье» (%s). Вещи с новым обликом '
+                'без TQ Together ПРОПАДУТ.' % unchecked)
+        if looks:
+            log('\n%d item record(s) with a new look (Atelier) are still in use, e.g. in %s. Without TQ Together these '
+                'items DISAPPEAR. First put them into the last bag of the vault "Ателье" in TQVault and run Atelier.bat '
+                '- they get their own look back.' % (len(looks), next(iter(looks.values()))))
+            log('Вещи с новым обликом из ателье (%d) ещё лежат у героев или в хранилищах. Без TQ Together они ПРОПАДУТ. '
+                'Сначала положите их в последнюю сумку хранилища «Ателье» в TQVault и запустите Atelier.bat - им '
+                'вернётся родной облик.' % len(looks))
+        word = 'YES' if unchecked is None else 'YES, NO CHECK'
         try:
-            ok = input('Type YES to continue / Введите YES для продолжения: ').strip().upper() == 'YES'
+            ok = input('Type %s to continue / Введите %s для продолжения: ' % (word, word)).strip().upper() == word
         except EOFError:
             ok = False
         if ok:
@@ -365,37 +452,18 @@ def main():
 
     cleanup_old_cache()
     base = inst.prepare()
+    if '--atelier' in args:              # 1.9.0: new looks for items in the TQVault vault "Ателье" (atelier.py)
+        import atelier
+
+        def build():
+            choose_hero(args, base, hero=inst.state.get('hero'))     # the hero of the last build: same difficulty
+            return build_install(inst, base, args, force=True)
+        atelier.run(game, inst, build, log, pause)
+        write_log()
+        pause()
+        return
     choose_hero(args, base)
-    fp = fingerprint(base)
-    # 1.8.1: texts that failed to go in last time for want of ArchiveTool are tried again once it is there
-    texts_ok = not (inst.state.get('texts_no_tool') and os.path.exists(inst.tool))
-    if '--rebuild' not in args and inst.state.get('fingerprint') == fp and inst.installed_intact() and texts_ok:
-        log('Nothing changed since the last start - companions are up to date. / Изменений нет, соратники актуальны.')
-    else:
-        log('Building companions from your saves - please do not close this window ...')
-        log('Собираю соратников из сохранений - пожалуйста, не закрывайте это окно ...')
-        import build_companions as B, verify_companions
-        B.LOG = LOG_LINES
-        b = B.Builder(base)
-        b.run()
-        problems = verify_companions.check(b.db.arz.records, base, log, touched=b.tweak_touched, gear=b.gear_ledger,
-                                           souls=b.soul_ledger)
-        problems += verify_companions.string_table(os.path.join(B.OUT, 'database.arz'))
-        if problems:
-            log('\n'.join(problems))
-            raise SystemExit('Self-check failed - nothing was installed. / Самопроверка не прошла, ничего не установлено.')
-        inst.install(os.path.join(B.OUT, 'database.arz'), B.text_payload('ru'), B.text_payload('en'))
-        inst.state['fingerprint'] = fingerprint(base)     # the build rewrote the registry
-        inst.save_state()
-        if paths.frozen():                                 # the copy in the game folder is what counts
-            try:
-                os.remove(os.path.join(B.OUT, 'database.arz'))
-            except OSError:
-                pass
-        names = [r[0] for r in b.report]
-        log('Companions / Соратники: %s' % (', '.join(names) if names else
-            'none yet (a character needs level 20 and a mastery) / пока нет (нужен 20-й уровень и мастерство)'))
-        log('Report / Отчёт: %s' % os.path.join(B.OUT, 'companions.txt'))
+    build_install(inst, base, args)
     if '--no-launch' not in args:
         launch(game)
         write_log()

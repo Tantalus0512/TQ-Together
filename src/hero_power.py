@@ -16,7 +16,10 @@ Attack speed (Character::GetAttackSpeed 0x100dc930, CalculateAttackSpeed 0x100e0
   mods = every characterAttackSpeedModifier / characterTotalSpeedModifier (CharAttributeMod_AttackSpeed 0x100fda80 adds
   to the body AND the weapon slot), held between body x playerAttackSpeedCapMin/Max %;
   shown % = 100 x speed / body x D(unarmed attack anims) / D(attack anims of the hand state) (1.3.3, see anim_ratio).
-usage: python hero_power.py <Player.chr> [--no-toggles] [--difficulty N] [--band] [-v]
+1.8.5: combat_strength(path) - the Difficulty=power measure: expected damage per swing against a typical Legendary
+monster (hit chance and crit from OA/DA, resistances, armour) with on-hit self buffs up and the weapon-pool attacks
+mixed in by their chance weights, x real swings per second; on the database the game will run (tweaks applied).
+usage: python hero_power.py <Player.chr> [--no-toggles] [--difficulty N] [--band] [--fight] [--tweaked] [-v]
 """
 import sys, os, re, math
 sys.path.insert(0, r'D:\TQMod\tools')   # development only; the exe bundles these
@@ -26,24 +29,41 @@ import build_companions as bc
 
 DB = None
 _A = None
+TWEAKED = False
+TWEAK_ERROR = None      # a tweak that does not apply: measured on the clean database (the build stops on it anyway)
 
 
-def use_db(path):
-    global DB, _A
-    if path != DB:
-        DB, _A = path, None
+def use_db(path, tweaked=False):
+    """tweaked (1.8.5): the player's database tweaks (tweaks.py) go on in memory first, as in the build - a mod made
+    of tweaks (new skill numbers) changes the hero's damage"""
+    global DB, _A, TWEAKED
+    if path != DB or tweaked != TWEAKED:
+        DB, _A, TWEAKED = path, None, tweaked
         _cache.clear()
 
 
 def db():
-    global _A
+    global _A, TWEAK_ERROR
     if _A is None:
         if DB is None:
             import paths
             g = paths.find_game()
             b = os.path.join(g, 'Database', 'database.arz')
-            use_db(b + paths.BASE_SUFFIX if os.path.isfile(b + paths.BASE_SUFFIX) else b)
-        _A = LazyArz.load(DB)
+            use_db(b + paths.BASE_SUFFIX if os.path.isfile(b + paths.BASE_SUFFIX) else b, TWEAKED)
+        a = LazyArz.load(DB)
+        if TWEAKED:
+            import tweaks, tqlib
+            try:
+                tweaks.apply(tqlib.DB(a), log=lambda *x: None)
+            except tweaks.TweakError as e:
+                TWEAK_ERROR = str(e)
+                a = LazyArz.load(DB)
+            import transmog                    # 1.9.0: a worn item with a new look is a clone record of ours
+            try:
+                transmog.apply(tqlib.DB(a), log=lambda *x: None)
+            except transmog.TransmogError as e:
+                TWEAK_ERROR = TWEAK_ERROR or str(e)
+        _A = a
     return _A
 
 
@@ -221,9 +241,10 @@ def set_gchance(store, recs_levels):
 
 # ---------------------------------------------------------------- equations (records\game\combatequations.dbr)
 class Eq(object):
-    def __init__(self, st, dx, it, level):
+    def __init__(self, st, dx, it, level, ce=None):
+        """ce: the combatequations record ({lowercase field: values}) of another database (souls.py, 1.8.5)"""
         self.s, self.d, self.i, self.l = st, dx, it, level
-        ce = rec(r'records\game\combatequations.dbr')
+        ce = ce or rec(r'records\game\combatequations.dbr')
         self.src = {k: sval(ce, k) for k in ('physicalDamageEquation', 'physicalNonWeaponDamageEquation',
                                                'pierceDamageEquation', 'pierceNonWeaponDamageEquation',
                                                'elementalDamageEquation', 'elementalDurationDamageEquation',
@@ -470,6 +491,10 @@ SELF_TOGGLES = {'skill_buffselftoggled'}
 #   The toggle switches itself off when the profile's weapon flags do not match (UpdateSkillController 0x10274f10).
 RADIUS_TOGGLES = {'skill_buffradiustoggled'}
 RADIUS_LOAD = {'skill_buffradius', 'skill_buffradiustoggled'}      # classes whose profile = buffSkillName record
+# 1.8.5 (combat=True): on-hit self buffs (Battle Rage, Distortion Field) count as up - in a fight they fire within a
+# second (20-25 % per hit at ~2.8 hits/s) and last longer than their cooldown or close to it
+ONHIT_BUFFS = {'skill_passiveonhitbuffself'}
+WEAPON_POOL = 'skill_wpattack_basicattack'      # weapon-pool attacks: replace a swing by skillChanceWeight
 
 
 def is_debuff(r):
@@ -478,7 +503,9 @@ def is_debuff(r):
     return bool(arr(r, 'debufSkill', 1)) or cls.startswith('skillbuff_debuf') or cls == 'skillbuff_contageous'
 
 
-def analyse(path, toggles=True, difficulty=2, verbose=False):
+def analyse(path, toggles=True, difficulty=2, verbose=False, combat=False, pool_member=None):
+    """combat: on-hit self buffs counted as passives; pool_member: this weapon-pool attack (record key) too (1.8.5)"""
+    family = PASSIVE_FAMILY | ONHIT_BUFFS if combat else PASSIVE_FAMILY
     info, skills = save_skills(path)
     attrs, _tex = bc.save_extra(path)
     items = bc.parse_equipment(path)
@@ -593,12 +620,17 @@ def analyse(path, toggles=True, difficulty=2, verbose=False):
                 continue
             add(m['r'], ml, '%s > modifier %s L%d' % (lab, os.path.basename(m['name']), ml), True, ch)
 
+    pool = []        # (record key, skillChanceWeight, level) of the weapon-pool attacks the worn weapons allow
+    for n in nodes:
+        lvl = cur_level(n)
+        if n['cls'] == WEAPON_POOL and lvl > 0 and available(n['r'])[0]:
+            pool.append((n['k'], arr(n['r'], 'skillChanceWeight', lvl), lvl))
     for n in nodes:
         lvl = cur_level(n)
         if lvl <= 0:
             continue
         r, cls, bn = n['r'], n['cls'], os.path.basename(n['name'])
-        if cls in PASSIVE_FAMILY:
+        if cls in family or n['k'] == pool_member:
             ok, why = available(r)
             if not ok:
                 notes.append('%s %s skipped (%s)' % (cls, bn, why))
@@ -690,6 +722,12 @@ def analyse(path, toggles=True, difficulty=2, verbose=False):
         return max(v, 0.0)
     STR, DEX, INT = total_attr('characterStrength'), total_attr('characterDexterity'), total_attr('characterIntelligence')
     PTOE = total_attr('characterPhysToElementalRatio')
+    # offensive ability (masteries\balance\hero_stats.py): (flat + Dexterity) x (1 + modifiers %)
+    OA = (sum(arr(r, 'characterOffensiveAbility', l) for r, l in srcs) + DEX) * \
+        (1 + sum(arr(r, 'characterOffensiveAbilityModifier', l) for r, l in srcs) / 100.0)
+    # swings per second: the attack animation of the hand state played at the attack speed (parity3\speed_notes.md)
+    d_cur = attack_anim_seconds(rec(sval(pc, 'charAnimationTableName')) or pc, HAND_PREFIX[hand])
+    swings = speed / d_cur if d_cur > 0 else speed_pct * 0.74 / 0.52778 / 100.0
     eq = Eq(STR, DEX, INT, level)
     # ---- non-weapon damage/modifier sources
     pak_store = Store('game balance pak')
@@ -754,7 +792,11 @@ def analyse(path, toggles=True, difficulty=2, verbose=False):
            'hands': [os.path.basename(h['it']['base']) if h else 'bare hand' for h in hands],
            'skills_active': [lab for r, l, lab in active],
            'sets': [(sval(r, 'FileDescription'), n) for r, n in set_recs],
-           'skill_bonus': (all_bonus, mast_bonus, skill_bonus)}
+           'skill_bonus': (all_bonus, mast_bonus, skill_bonus),
+           # 1.8.5 (combat_strength): B by damage kind averaged over the hands (as the sheet averages them), OA,
+           # swings per second, projectile attacks (bow, staff, thrown: no OA/DA roll), the weapon pool
+           'parts_avg': {k: sum(x[3].get(k, 0.0) for x in res) / len(res) for x in res for k in x[3]},
+           'oa': OA, 'swings': swings, 'projectile': hand in (3, 5, 6, 7), 'pool': pool}
     return out
 
 
@@ -762,6 +804,124 @@ def strength(path):
     """the auto-difficulty measure of one hero: the sheet's DPS on Legendary, toggles on (the save does not say which
     toggles are running; a toggled hero plays with them on)"""
     return analyse(path, True, 2)['dps']
+
+
+# ---------------------------------------------------------------- 1.8.5: damage against a typical Legendary monster
+# medians of the 1577 common monsters on Legendary, solo (masteries\balance\monster_stats.py, 22.10.2026): defensive
+# ability 842, armour 414 (Armor_Passive), resistances 30 % (physical 0), no dodge, no damage absorption
+TYPICAL_MONSTER = {'da': 842.0, 'armor': 414.0, 'res': {'physical': 0.0, 'pierce': 30.0, 'bleeding': 30.0, 'cold': 30.0,
+                                                         'fire': 30.0, 'lightning': 30.0, 'poison': 30.0, 'life': 30.0}}
+ARMOR_ABSORB = 0.66             # gameengine armorDefensiveAbsorption: armour stops 66 % of min(physical, armour)
+DAMAGE_KIND = {'physical': 'physical', 'bonusPhysical': 'physical', 'DoT physical': 'physical',
+               'pierce(ratio)': 'pierce', 'pierce': 'pierce', 'DoT bleeding': 'bleeding',
+               'cold': 'cold', 'DoT cold': 'cold', 'fire': 'fire', 'DoT fire': 'fire', 'lightning': 'lightning',
+               'DoT lightning': 'lightning', 'poison': 'poison', 'DoT poison': 'poison', 'vitality': 'life',
+               'DoT vitality': 'life', 'elemental(PtoE)': 'elemental'}
+
+
+def pth(oa, da):
+    """combatequations: chance to hit, 100 x 0.88 ^ ((100 + DA - OA) / 100) + 10"""
+    return 100.0 * 0.88 ** ((100.0 + da - oa) / 100.0) + 10.0
+
+
+def hit_mult(p, ce=None):
+    """(hit chance, expected damage multiplier) - CombatManager::CalculateDamageModifier 0x101118a0: below
+    pthThreshold1 a miss when thr1 x rand > PTH and x (PTH/2 + 45)/100; above, PTH x rand against the thresholds
+    gives x1.0..1.5 (the crit)"""
+    ce = ce or rec(r'records\game\combatequations.dbr')
+    thr = [(arr(ce, 'pthThreshold%d' % i, 1), arr(ce, 'pthDamageModifier%d' % i, 1)) for i in range(1, 7)]
+    if not thr[0][0]:
+        return 1.0, 1.0
+    if p < thr[0][0]:
+        return p / thr[0][0], (p / 2.0 + 45.0) / 100.0
+    edges = [0.0] + [t for t, m in thr[1:]] + [max(p, thr[-1][0])]
+    mults = [1.0] + [m for t, m in thr[1:]]
+    e = sum((min(edges[i + 1], p) - edges[i]) * m for i, m in enumerate(mults) if min(edges[i + 1], p) > edges[i])
+    return 1.0, e / p
+
+
+def swing_damage(o, m=TYPICAL_MONSTER, ce=None):
+    """expected damage of one swing of analyse() result o against monster m: x hit chance and crit (projectiles: no
+    OA/DA roll, no crit - defence_notes), x (1 - resistance) per damage kind, armour off the instant physical part.
+    DoT counts once at its per-second value (the sheet's rule), % current life is not counted"""
+    hit, mult = (1.0, 1.0) if o['projectile'] else hit_mult(pth(o['oa'], m['da']), ce)
+    tot = phys = 0.0
+    for k, v in o['parts_avg'].items():
+        kind = DAMAGE_KIND.get(k)
+        if kind is None or v <= 0:
+            continue
+        for kd in (('fire', 'cold', 'lightning') if kind == 'elemental' else (kind,)):
+            x = v / (3.0 if kind == 'elemental' else 1.0) * max(0.0, 1 - m['res'].get(kd, 0.0) / 100.0)
+            if kd == 'physical' and k != 'DoT physical':
+                phys += x
+            else:
+                tot += x
+    tot += phys - ARMOR_ABSORB * min(phys, m['armor'])
+    return hit * mult * tot, hit, mult
+
+
+def combat_strength(path, difficulty=2):
+    """1.8.5, the Difficulty=power measure: damage per second against a typical Legendary monster =
+    expected damage per swing (on-hit self buffs up, weapon-pool attacks by skillChanceWeight over max(100, sum)) x
+    swings per second. The character window misses crits (OA far above the monsters' DA: x1.5 almost every hit),
+    on-hit buffs and the pool - a hero with Battle Rage hits 4.5x his window number. Spells are not counted."""
+    sheet = analyse(path, True, difficulty)
+    fight = analyse(path, True, difficulty, combat=True)
+    W = max(100.0, sum(w for k, w, l in fight['pool']))
+    e_fight, hit, mult = swing_damage(fight)
+    e = e_fight * (1 - sum(w for k, w, l in fight['pool']) / W)
+    for k, w, l in fight['pool']:
+        e += swing_damage(analyse(path, True, difficulty, combat=True, pool_member=k))[0] * w / W
+    return {'dps': int(e * fight['swings']), 'swing': e, 'swings': fight['swings'], 'hit': hit, 'crit': mult,
+            'window_dps': sheet['dps'], 'window_swing': swing_damage(sheet)[0], 'buff_swing': e_fight,
+            'pool': [(os.path.basename(k), w) for k, w, l in fight['pool']]}
+
+
+MEASURE_VERSION = 1      # bump when combat_strength counts differently: the cached numbers are thrown away
+_tweaks_fp = []
+
+
+def measure(path, cache_file=None):
+    """combat_strength through a small cache (cache_file, JSON): the key is the database file, the tweaks and the
+    hero's own data (level, skills, attributes, gear) - loading the database with the tweaks takes ~10 s, an
+    unchanged hero costs nothing on the next start (1.8.5)"""
+    import hashlib, json, time
+    key = None
+    if cache_file and DB:
+        if TWEAKED and not _tweaks_fp:
+            import tweaks, transmog
+            _tweaks_fp.append(tweaks.fingerprint() + transmog.fingerprint())
+        c = chr_reader.read_char(path)
+        st = os.stat(DB)
+        data = {'v': MEASURE_VERSION, 'db': [os.path.normcase(DB), st.st_size, int(st.st_mtime)],
+                'tweaks': _tweaks_fp[0] if TWEAKED else '', 'level': c.get('level'), 'skills': c.get('skills'),
+                'masteries': c.get('masteries'), 'extra': bc.save_extra(path), 'gear': bc.parse_equipment(path)}
+        key = hashlib.md5(json.dumps(data, sort_keys=True, default=str).encode('utf-8')).hexdigest()
+        try:
+            with open(cache_file, encoding='utf-8') as f:
+                got = json.load(f).get(key)
+            if got:
+                return got['r']
+        except (OSError, ValueError, AttributeError, KeyError, TypeError):
+            pass
+    r = combat_strength(path)
+    if key and not TWEAK_ERROR:
+        try:
+            try:
+                with open(cache_file, encoding='utf-8') as f:
+                    old = json.load(f)
+                old = old if isinstance(old, dict) else {}
+            except (OSError, ValueError):
+                old = {}
+            old[key] = {'t': time.time(), 'r': r}
+            keep = dict(sorted(old.items(), key=lambda kv: -kv[1].get('t', 0) if isinstance(kv[1], dict) else 0)[:64])
+            os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+            with open(cache_file + '.tmp', 'w', encoding='utf-8') as f:
+                json.dump(keep, f)
+            os.replace(cache_file + '.tmp', cache_file)
+        except OSError:
+            pass
+    return r
 
 
 def report(o, verbose=False):
@@ -796,8 +956,16 @@ if __name__ == '__main__':
     if '--difficulty' in args:
         diff = int(args[args.index('--difficulty') + 1])
     paths = [a for a in args if a.lower().endswith('.chr')]
+    if '--tweaked' in args:
+        use_db(None, True)
     for p in paths:
         report(analyse(p, toggles, diff, verbose), verbose)
+        if '--fight' in args:
+            c = combat_strength(p, diff)
+            print('>>> vs a typical Legendary monster: %d per swing (window %d, + on-hit buffs %d, + pool %s) x %.2f '
+                  'swings/s = %d per second (hit %.0f %%, crit x%.3f)' % (
+                      c['swing'], c['window_swing'], c['buff_swing'], c['pool'], c['swings'], c['dps'],
+                      100 * c['hit'], c['crit']))
         if '--band' in args:
             for b in (-1, 1):
                 Store.band = b

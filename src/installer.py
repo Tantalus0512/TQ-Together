@@ -23,15 +23,103 @@ def md5(p):
     return h.hexdigest()
 
 
+def fsync_file(p):
+    with open(p, 'rb+') as f:
+        f.flush()
+        os.fsync(f.fileno())
+
+
 def safe_copy(src, dst):
-    """copy next to the target, then swap in one step: a full disk or a crash never leaves a half-written game file"""
+    """copy next to the target, then swap in one step: a full disk or a crash never leaves a half-written game file.
+    1.9.1: the copy is flushed to disk before the swap and read back after it; a mismatch puts the old file back"""
     tmp = dst + '.tqtogether-tmp'
+    old = dst + '.tqtogether-old'
+    if os.path.exists(old):                  # left by a crash between the two swaps below
+        if os.path.exists(dst):
+            os.remove(old)
+        else:
+            os.replace(old, dst)
+    want = md5(src)
     try:
         shutil.copy2(src, tmp)
-        os.replace(tmp, dst)
+        fsync_file(tmp)
+        had = os.path.exists(dst)
+        if had:
+            os.replace(dst, old)
+        try:
+            os.replace(tmp, dst)
+            ok = md5(dst) == want
+        except PermissionError:              # no write access: said as such by the callers
+            if had:
+                os.replace(old, dst)
+            raise
+        except OSError:
+            ok = False
+        if not ok:
+            if had:
+                os.replace(old, dst)
+            elif os.path.exists(dst):
+                os.remove(dst)
+            raise OSError('%s: the copy read back differs from %s - the previous file is kept' % (dst, src))
+        if had:
+            os.remove(old)
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
+
+
+SAFETY_KEEP = 10
+
+
+def backup_saves(log, why):
+    """1.9.1: insurance before every install, uninstall and atelier write - the heroes (SaveData\\Main\\_*\\Player.chr)
+    and the transfer stash (SaveData\\Sys\\winsys.dx?) into <data>\\safety\\<time> <why>\\, only when their content
+    changed since the last copy (md5), the last SAFETY_KEEP copies kept. If the game ever runs on a clean
+    database.arz (Steam verify/update, started past TQ Together), items on our records vanish from these files.
+    -> the new folder, or None when nothing changed. Raises SystemExit when the copy cannot be made."""
+    main = paths.saves_dir()
+    sysd = os.path.join(os.path.dirname(main), 'Sys')
+    files = sorted(glob.glob(os.path.join(glob.escape(main), '_*', 'Player.chr'))) + \
+        sorted(glob.glob(os.path.join(glob.escape(sysd), 'winsys.dx?')))
+    if not files:
+        return None
+    root = os.path.join(paths.data_dir(), 'safety')
+    rel = lambda p: os.path.relpath(p, os.path.dirname(main))
+    try:
+        sums = {rel(p): md5(p) for p in files}
+        olds = sorted(d for d in (os.listdir(root) if os.path.isdir(root) else [])
+                      if os.path.isfile(os.path.join(root, d, 'manifest.json')))
+        if olds:
+            try:
+                with open(os.path.join(root, olds[-1], 'manifest.json'), encoding='utf-8') as f:
+                    if json.load(f).get('files') == sums:
+                        return None
+            except (OSError, ValueError):
+                pass
+        import time
+        dst = os.path.join(root, '%s %s' % (time.strftime('%Y%m%d_%H%M%S'), why))
+        try:
+            for p in files:
+                q = os.path.join(dst, rel(p))
+                os.makedirs(os.path.dirname(q), exist_ok=True)
+                shutil.copy2(p, q)
+                if md5(q) != sums[rel(p)]:
+                    raise OSError('%s: the copy differs' % q)
+            with open(os.path.join(dst, 'manifest.json'), 'w', encoding='utf-8') as f:     # last: marks it whole
+                json.dump({'why': why, 'files': sums}, f, ensure_ascii=False, indent=1)
+        except OSError:
+            shutil.rmtree(dst, ignore_errors=True)
+            raise
+        olds.append(os.path.basename(dst))
+        keep = set(sorted(olds)[-SAFETY_KEEP:])
+        for d in os.listdir(root):          # older copies, and any half-made one left by a crash
+            if d not in keep and os.path.isdir(os.path.join(root, d)):
+                shutil.rmtree(os.path.join(root, d), ignore_errors=True)
+    except OSError as e:
+        raise SystemExit('Could not back up the saves before changing anything (%s) - nothing was changed.\n'
+                         'Не удалось сделать страховочную копию сохранений - ничего не изменено.' % e)
+    log('  saves backed up / копия сохранений: %s' % dst)
+    return dst
 
 
 def no_write_access(game):
@@ -227,6 +315,20 @@ class Installer(object):
         else:
             self.log('  ! %s: the saved original contains TQ Together texts and could not be cleaned' % name)
 
+    def check_base(self, f):
+        """1.9.1: a saved original about to go over a game file must be whole and the one prepare() checked"""
+        b = self.base(f)
+        name = os.path.basename(f)
+        rec = self.state.get('clean_bases', {}).get(name)
+        if not valid_file(b) or (rec and md5(b) != rec):
+            raise SystemExit(
+                'The saved original %s is damaged - nothing was changed.\n'
+                'Steam: Properties > Installed Files > Verify integrity of game files (GOG Galaxy: Verify / Repair), '
+                'then run TQ Together again.\n'
+                'Сохранённый оригинал %s повреждён - ничего не изменено. Сделайте в Steam «Свойства > Установленные '
+                'файлы > Проверить целостность файлов игры» и запустите TQ Together снова.' % (
+                    os.path.basename(b), os.path.basename(b)))
+
     def installed_intact(self):
         inst = self.state.get('installed', {})
         return bool(inst) and all(os.path.exists(f) and md5(f) == inst.get(os.path.basename(f)) for f in self.files())
@@ -234,6 +336,11 @@ class Installer(object):
     # ---------------------------------------------------------------- install
     def install(self, build_arz, text_ru, text_en):
         """copy the built database, merge our text tags into every Text_XX.arc (RU text into Text_RU, EN elsewhere)"""
+        if game_running():                          # 1.9.1: asked again right before writing
+            raise SystemExit(GAME_RUNNING)
+        for arc in self.texts:                      # 1.9.1: every original we copy from is whole, before anything
+            self.check_base(arc)
+        backup_saves(self.log, 'install')
         try:
             safe_copy(build_arz, self.arz)
         except PermissionError:
@@ -307,9 +414,12 @@ class Installer(object):
     def uninstall(self):
         """put the originals back - but never over a file the game (an update, Verify) replaced after our install.
         -> list of game files that still hold our data and could not be restored (empty = clean)"""
+        if game_running():                          # 1.9.1: asked again right before writing
+            raise SystemExit(GAME_RUNNING)
         n = 0
         inst = self.state.get('installed', {})
         left = []
+        plan = []                                   # 1.9.1: decide first, check the originals, then change anything
         for f in self.files():
             b = self.base(f)
             name = os.path.basename(f)
@@ -326,7 +436,13 @@ class Installer(object):
                 self.log('  ! %s: ArchiveTool.exe is missing, cannot tell if it holds our texts - kept %s' % (
                     name, os.path.basename(b)))
                 continue
-            if ours or not os.path.exists(f):
+            plan.append((f, b, ours or not os.path.exists(f)))
+        for f, b, copy in plan:
+            if copy:
+                self.check_base(f)
+        backup_saves(self.log, 'uninstall')
+        for f, b, copy in plan:
+            if copy:
                 safe_copy(b, f)
                 n += 1
             os.remove(b)
@@ -341,9 +457,15 @@ class Installer(object):
 
 
 def game_running():
+    """1.9.1: tasklist's output read as bytes - as text a non-ASCII line (a localized Windows) raised
+    UnicodeDecodeError and the game counted as closed"""
     try:
-        out = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq TQ.exe'], capture_output=True, text=True,
-                             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)).stdout
-        return 'TQ.exe' in out
+        out = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq TQ.exe'], capture_output=True,
+                             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)).stdout or b''
+        return b'tq.exe' in out.lower()
     except Exception:
         return False
+
+
+GAME_RUNNING = ('Titan Quest is running - close it first. Nothing was changed.\n'
+                'Titan Quest запущен - закройте его. Ничего не изменено.')

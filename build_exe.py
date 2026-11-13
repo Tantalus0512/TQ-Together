@@ -19,7 +19,7 @@ NAME = 'TQ Together %s' % VER
 DIST = os.path.join(HERE, 'dist')
 WORK = os.path.join(HERE, 'build')
 MODULES = ['paths', 'installer', 'build_companions', 'verify_companions', 'tweaks', 'orb_odds', 'hero_power', 'souls', 'soul_anims', 'arz',
-           'arz_lazy', 'tqlib', 'chr_reader']
+           'arz_lazy', 'tqlib', 'chr_reader', 'transmog', 'atelier']
 EXCLUDE = ['ssl', '_ssl', 'socket', '_socket', 'select', 'selectors', 'urllib', 'http', 'email', 'xml', 'xmlrpc',
            'ftplib', 'smtplib', 'mailbox', 'bz2', '_bz2', 'lzma', '_lzma', '_zstd', 'compression', 'decimal',
            '_decimal', 'unicodedata', '_hashlib', 'tkinter', 'asyncio', 'multiprocessing', 'sqlite3', 'pydoc',
@@ -71,6 +71,8 @@ def main():
         shutil.copy2(os.path.join(HERE, 'docs', f), os.path.join(out, f))
     with open(os.path.join(out, 'Uninstall TQ Together.bat'), 'w', newline='\r\n', encoding='ascii') as f:
         f.write('@echo off\n"%~dp0TQTogether.exe" --uninstall\n')
+    with open(os.path.join(out, 'Atelier.bat'), 'w', newline='\r\n', encoding='ascii') as f:    # 1.9.0
+        f.write('@echo off\n"%~dp0TQTogether.exe" --atelier\n')
     with open(os.path.join(out, 'TQTogether.ini.example'), 'w', encoding='utf-8') as f:
         f.write('; Rename to TQTogether.ini to change a setting (README: Difficulty).\n'
                 '; Переименуйте в TQTogether.ini, чтобы поменять настройку (README: Сложность).\n'
@@ -98,7 +100,7 @@ def main():
                 '; SoulLife=100\n'
                 '; the average boss soul\'s basic attack, % of your hero\'s damage per second (0 = the boss\'s own damage) /\n'
                 '; базовая атака средней души, % от урона в секунду героя (0 - собственный урон босса)\n'
-                '; SoulDamage=30\n'
+                '; SoulDamage=35\n'
                 '; no soul animation faster than this many times the boss\'s own (1 = the boss\'s own speeds) /\n'
                 '; ни одна анимация души не быстрее, чем во столько раз от самого босса (1 - скорости самого босса)\n'
                 '; SoulSpeedMax=2\n'

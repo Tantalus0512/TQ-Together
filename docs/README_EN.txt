@@ -122,13 +122,14 @@ The soul in battle
     the average), hero monster souls are weaker (0.4-1). The average boss at level 85 has about 47,000 on
     Legendary (1.7.1). SoulLife= (in %) scales it all. With the hero difficulty (Difficulty=power) the monsters hit
     several times harder and more accurately - the souls get as many times more life and defence on Legendary (1.7.4);
-  - damage (1.7.1) follows your hero: the average boss soul's basic attack deals SoulDamage= % (30) of the hero's
-    damage per second from the character window, the soul's skills grow by the same factor, and every soul keeps
-    its rank among the bosses. The hardest hitters are held: a boss at most 1.5 times the average soul (about 45%
-    of the hero's damage), a hero monster at most the average. Souls that fight with a weapon (swords, bows - 91
-    souls) are measured by their weapon (1.8.3). Bosses with a weak hand (Arachne) fight with poison and skills.
-    Creatures a soul summons itself (Arachne's spiders) are not raised. SoulDamage=0 = the boss's own
-    damage;
+  - damage (1.7.1) follows your hero: the average boss soul's basic attack deals SoulDamage= % (35) of the hero's
+    damage per second, both measured on a common Legendary monster (1.8.5: crits, resistances, armour - the same
+    measure as the hero difficulty), the soul's skills grow by the same factor, and every soul keeps its rank among
+    the bosses. The hardest hitters are held: a boss at most 1.5 times the average soul (about 53% of the hero's
+    damage), a hero monster at most the average. Souls that fight with a weapon (swords, spears, bows, staves - 290
+    souls) are measured by their weapon, wherever its loot table is (1.8.5). Bosses with a weak hand (Arachne)
+    fight with poison and skills; casters keep their spells as strong as the factor makes them. Creatures a soul
+    summons itself (Arachne's spiders) are not raised. SoulDamage=0 = the boss's own damage;
   - big bosses are shrunk to 1.3 (SoulMaxScale=) to fit through doors; a soul leaves no boss chest when it dies,
     its body dissolves like an eidolon's (1.7.6);
   - speed (1.7.5): a soul runs as fast as your hero (his run bonus from gear and skills counted); giants (Typhon,
@@ -148,6 +149,30 @@ The soul in battle
   Report: build\souls.txt in the data folder - where each soul drops, its life and level.
   Do not change the shard counts once you collect: a soul half done with the old count would complete without
   its summon. Souls=0 / SoulHeroes=0 stop the drops; collected souls keep working.
+
+
+ATELIER: A NEW LOOK FOR AN ITEM (1.9.0)
+---------------------------------------
+The item stays what it is - stats, affixes, relics, set, weapon damage - and looks like another item of the same
+kind (a sword like a sword, a helmet like a helmet). The look is chosen in TQVault with items you already have.
+1. In TQVault create a vault named "Atelier" (or "Ателье").
+2. Put the item on the LEFT and the sample to its RIGHT in one bag. Bags 1-11: up to 11 items at a time.
+   The sample stays as it is; take it back afterwards.
+3. Close TQVault and the game, run Atelier.bat (or TQTogether.exe --atelier). It shows what it will do and asks.
+   For a new look the database is rebuilt (as on a normal start, for the hero of the last build), then one line of
+   the item in the vault changes - the record it refers to. The vault is backed up first: data folder\atelier\backup.
+4. Open TQVault and take the item to your hero.
+Own look back: put the item into the LAST bag of "Atelier" and run Atelier.bat.
+- The inventory icon changes only when the sample's icon takes as many cells; otherwise the item keeps its own icon
+  (an item's size in the bags must not change).
+- An item with a new look refers to a TQ Together record. Without TQ Together the game cannot find it and the item
+  disappears - like eidolons. Look records are never removed; give items their own look back before uninstalling.
+- The look registry: data folder\transmog.json (a copy in atelier\). Do not delete it.
+- If Steam verified or updated the game files, start the game only through TQ Together, otherwise items with a new
+  look disappear.
+- Insurance (1.9.1): before every install, uninstall and Atelier write the heroes (SaveData\Main\_*\Player.chr) and the
+  transfer stash (Sys\winsys.dx?) are copied into data folder\safety when they changed since the last copy; the last
+  10 are kept.
 
 
 EPIC / LEGENDARY RINGS
@@ -174,6 +199,8 @@ UNINSTALL
 Run "Uninstall TQ Together.bat" (or TQTogether.exe --uninstall) and type YES. The original game files are restored
 (a file the game updated after the mod was installed is left as it is). Back up your saves first: what the game
 does with eidolons set into items once the mod is gone has not been tested.
+Items with a new look from the Atelier disappear without the mod: first move them in TQVault into the last bag of
+"Atelier" and run Atelier.bat - they get their own look back. The uninstaller reminds you if any are left.
 
 
 FILES
@@ -193,12 +220,20 @@ FILES
     CompanionPlayers=1 - how many players one companion counts as: 1.5 or 2 = harder, 0.5 = easier
     (6 players at most).
   * Difficulty=power: for heroes geared far above the usual curve (items from editors and the like). Legendary
-    monster life follows the party's strength - the hero's "damage per second" as in the character window (average
-    attack damage x attack speed, read from the save at every start; spells are not included) plus that of the
-    companions in his rings: (sum / AutoLifeBase) ^ AutoLifePower, from x1 to AutoLifeMax (defaults 960, 0.65, 50).
-    10x the damage -> 4.5x the life, you still kill twice as fast. AutoLifeBoss=2 - bosses twice as tough again.
-    AutoDamagePower=0.3 - monster damage and accuracy follow the life factor, slower. Life.<hero name>=10 sets the
-    factor by hand. Older settings with AutoLife=1 keep working as before.
+    monster life follows the party's strength - the hero's damage per second against a common Legendary monster
+    (1.8.5): the average hit with hit chance and crits (an offensive ability far above the monsters' defence makes
+    almost every hit x1.5), on-hit buffs (Battle Rage and the like) and weapon-pool attacks by their chances, less
+    the monster's resistances (30%) and armour, times the hits per second. Read from the save at every start, on
+    the database with your tweaks as the game runs it; spells are not included. Plus that of the companions in his
+    rings: (sum / AutoLifeBase) ^ AutoLifePower, from x1 to AutoLifeMax (defaults 3200, 0.65, 50). Example: 52k
+    per hit x 2.8 hits per second = 145k -> x12, a common monster falls to the second hit. 10x the damage -> 4.5x
+    the life, you still kill twice as fast. AutoLifeBoss=2 - bosses twice as tough again. AutoDamagePower=0.3 -
+    monster damage and accuracy follow the life factor, slower. Life.<hero name>=10 sets the factor by hand.
+    Where the strength comes from (character window -> hit on a monster -> per second) is in tq_together.log and
+    at the top of build\companions.txt. Older settings with AutoLife=1 keep working as before.
+    The hero's pets (1.8.6): whatever the mastery skills summon hits (life factor) ^ AutoPetPower times harder on
+    Legendary and gets life and defence for the monsters' extra damage - a summon kills and lasts as on the game's
+    own Legendary. AutoPetPower=1 by default, 0 = pets as in the game. Companions and souls are not affected.
   * Difficulty=off: vanilla monsters.
   With more than one hero TQ Together asks at start who you are about to play (Enter = the hero saved last).
   The game reads its database once at start, so after switching heroes or the eidolons in your rings start the

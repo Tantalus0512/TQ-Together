@@ -9,14 +9,19 @@ A tweak file is data, never code:
      {"op": "del", "record": "records\\\\...\\\\b.dbr", "field": "lootWeight9"}]}
 type: int | real | string | bool (the game's own field types; the self-check compares them with vanilla).
 Record names are stored lowercase (the game looks records up by the lowercased path). A clone must not
-overwrite an existing record, and nothing may be written under records\\tqmod\\companions (ours).
+overwrite an existing record, and nothing may be written under records\\tqmod\\companions or \\transmog (ours).
+
+1.8.5: a tweak may also bring its own text tags (installed with ours: RU into Text_RU, EN everywhere else):
+  {"name": ..., "ops": [...], "texts": {"tagMyThing": {"ru": "...", "en": "..."}}}
+One line each (game codes such as {^n} {^y} {^w} are fine), tags start with a letter, and tagTQ... is ours.
 """
-import glob, hashlib, json, os
+import glob, hashlib, json, os, re
 
 import paths
 
 TYPES = {'int': 0, 'real': 1, 'string': 2, 'bool': 3}
-RESERVED = 'records\\tqmod\\companions\\'
+RESERVED = ('records\\tqmod\\companions\\', 'records\\tqmod\\transmog\\')     # 1.9.0: + the atelier's clones
+TEXT_TAG = re.compile(r'^[A-Za-z][A-Za-z0-9_]{2,80}$')
 
 
 def tweaks_dir():
@@ -76,6 +81,30 @@ def apply(db, log=print, folder=None):
         done.append((name, os.path.basename(p), len(t.get('ops', []))))
         log('  tweak: %s (%s, %d changes)' % (name, os.path.basename(p), len(t.get('ops', []))))
     return touched, done
+
+
+def texts(folder=None):
+    """-> [(tag, ru, en)] from the "texts" of every tweak file (1.8.5)"""
+    out, seen = [], {}
+    for p in files(folder):
+        with open(p, encoding='utf-8-sig') as f:
+            t = json.load(f)
+        tx = t.get('texts', {}) if isinstance(t, dict) else {}
+        if not isinstance(tx, dict):
+            raise TweakError('%s: "texts" must be {"tag": {"ru": ..., "en": ...}}' % os.path.basename(p))
+        for tag, v in tx.items():
+            where = '%s text %s' % (os.path.basename(p), tag)
+            if not TEXT_TAG.match(tag) or tag.lower().startswith('tagtq'):
+                raise TweakError('%s: a tag is letters, digits and _ and must not start with tagTQ' % where)
+            if tag.lower() in seen:
+                raise TweakError('%s: also defined in %s' % (where, seen[tag.lower()]))
+            if not isinstance(v, dict) or not isinstance(v.get('ru'), str) or not isinstance(v.get('en'), str):
+                raise TweakError('%s: want {"ru": "...", "en": "..."}' % where)
+            if any(c in v['ru'] + v['en'] for c in '\r\n'):
+                raise TweakError('%s: one line only (use {^n} for a line break)' % where)
+            seen[tag.lower()] = os.path.basename(p)
+            out.append((tag, v['ru'], v['en']))
+    return out
 
 
 def _apply_op(db, R, op, where, touched):

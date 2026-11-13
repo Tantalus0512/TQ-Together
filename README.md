@@ -54,7 +54,7 @@ Run from source without building: `py -3 src/tq_together.py [--uninstall | --reb
 | `src/chr_reader.py` | reader of `Player.chr` save files |
 | `src/orb_odds.py` | exact drop odds of electrum orbs and boss chests by the engine's loot rules (used by the self-check) |
 | `src/tweaks.py` | the player's own database tweaks (JSON files), applied under the companions |
-| `src/hero_power.py` | a hero's damage per second as the character window shows it (auto difficulty) |
+| `src/hero_power.py` | a hero's damage per second: as the character window shows it, and against a common Legendary monster (Difficulty=power) |
 | `src/souls.py` | enslaved boss souls: every boss and hero monster as an amulet relic that summons it, at the hero's level |
 | `src/soul_anims.py` | root-motion speed and length of the animations the souls use (generated from the game's archives) |
 

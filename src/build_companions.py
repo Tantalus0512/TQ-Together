@@ -209,7 +209,12 @@ HERO_DAMAGE = 1.0  # 1.1.5: Legendary monster damage modifiers and offensive abi
 HERO_NAME = ''     # 1.2.0: the hero about to be played (choose_hero): his pet bonuses are cancelled on the companions
 PARTY_EXTRA = 0.0  # 1.4.0: extra players the summoned companions count as (choose_hero, TQTogether.ini Difficulty=party)
 HERO_LEVEL = 0     # 1.6.0: level of the hero about to be played (choose_hero) - boss souls come at this level
-HERO_DPS = 0.0     # 1.7.0: his character-window damage per second (choose_hero) - boss souls hit SoulDamage % of it
+HERO_DPS = 0.0     # 1.7.0: his damage per second (choose_hero) - boss souls hit SoulDamage % of it; 1.8.5: on a
+                   # typical Legendary monster (hero_power.combat_strength, was the character window)
+DIFFICULTY_NOTE = []  # 1.8.5: the hero and the difficulty it gave (choose_hero) - the top of build\companions.txt
+PET_POWER = 0.0    # 1.8.6: the hero's own summons hit HERO_LIFE ^ this harder on Legendary (TQTogether.ini AutoPetPower,
+                   # Difficulty=power only; 0 = as the game) - Builder.hero_pets
+PET_PACE = 'records\\tqmod\\companions\\hero_pet_pace.dbr'
 
 
 def party_burden():
@@ -870,6 +875,83 @@ class Builder(object):
                     n += 1
             self.db.mark(r['name'])
             log('  hero difficulty: %s damage x%.2f (%d fields)' % (r['name'].split(BS)[-1], HERO_DAMAGE, n))
+
+    def hero_pets(self):
+        """1.8.6 (owner 23.10: «питомцы какие-то слабенькие»): Difficulty=power makes Legendary monsters HERO_LIFE
+        times tougher and HERO_DAMAGE times harder-hitting, and the hero's own summons were left behind - a wolf pack
+        that took 5 s over a common monster took a minute (Nikton: x12). Every pet a skill of the hero's skill trees
+        summons (spawnObjects; the eleven masteries and whatever the tweaks added) gets one passive, on Legendary only
+        (skill levels 1/2/3 = Normal/Epic/Legendary, as the boss souls): every damage modifier +(x - 1) x (100 + the
+        pet pak's %), x = HERO_LIFE ^ AutoPetPower; life +(HERO_DAMAGE - 1) x (100 + pak %) and defence + the accuracy
+        the monsters gained (souls' guard) - against the thicker monsters a summon kills and lasts as on the game's
+        own Legendary. Companions and boss souls are records of their own with their own rules, and no monster
+        summons a hero's pet (checked 23.10 over the whole database): only the hero's summons change. The passive
+        goes after the pet's last skill - a free slot between a skill and its modifiers would steal the modifiers."""
+        self.pet_ledger = {'pets': 0, 'skills': 0, 'no_slot': []}
+        x = max(1.0, HERO_LIFE) ** max(0.0, PET_POWER)
+        hd = max(1.0, HERO_DAMAGE) if PET_POWER > 0 else 1.0
+        if x <= 1.0 + 1e-6 and hd <= 1.0 + 1e-6:
+            return
+        ge = self.R[key_of(GAP_SRC)]
+        pr = self.R.get(key_of(get1(ge, 'petAttributePak', '') or ''))
+        pak = {vn: float(vals[min(12, len(vals) - 1)]) for vn, vt, vals in (pr['vars'] if pr else []) if vt in (0, 1) and vals}
+        mp = self.R.get(key_of(get1(ge, 'monsterAttributePak', '') or ''))
+        oa = getv(mp, 'characterOffensiveAbility') if mp is not None else None
+        oa_l = float(oa[min(12, len(oa) - 1)] or 0) if oa else 0.0           # already x HERO_DAMAGE (hero_life)
+        r = self.clone(self.R[key_of(PASSIVE_SRC)]['name'], PET_PACE)
+        for vn, vt, vals in list(r['vars']):
+            if STAT_FIELD.match(vn) and (not vn.startswith('skill') or re.match(r'^skill(Cooldown|ManaCost|Projectile)', vn)):
+                delv(r, vn)
+        dmg = {}
+        for fld in ('offensivePhysicalModifier', 'offensivePierceModifier', 'offensiveColdModifier',
+                    'offensiveFireModifier', 'offensiveLightningModifier', 'offensivePoisonModifier',
+                    'offensiveLifeModifier', 'offensiveSlowPhysicalModifier', 'offensiveSlowBleedingModifier',
+                    'offensiveSlowColdModifier', 'offensiveSlowFireModifier', 'offensiveSlowLightningModifier',
+                    'offensiveSlowPoisonModifier', 'offensiveSlowLifeModifier'):
+            dmg[fld] = round((x - 1.0) * (100.0 + pak.get(fld, 0.0)), 1)
+            setv(r, fld, [0.0, 0.0, dmg[fld]], 1)
+        life = round((hd - 1.0) * (100.0 + pak.get('characterLifeModifier', 0.0)), 1)
+        da = round(oa_l * (1 - 1 / hd), 1)
+        setv(r, 'characterLifeModifier', [0.0, 0.0, life], 1)
+        setv(r, 'characterDefensiveAbility', [0.0, 0.0, da], 1)
+        setv(r, 'skillMaxLevel', 3, 0)
+        setv(r, 'FileDescription', 'TQ Together hero pets on Legendary: monsters x%g life, x%g damage - damage x%g, '
+             'life +%g %%, defence +%g' % (HERO_LIFE, HERO_DAMAGE, x, life, da))
+        pc = self.R.get(key_of('records\\xpack\\creatures\\pc\\malepc01.dbr'))
+        skills, pets = set(), set()
+        for vn, vt, vals in (pc['vars'] if pc else []):
+            if not re.match(r'^skillTree\d+$', vn) or not vals or not vals[0]:
+                continue
+            tree = self.R.get(key_of(vals[0]))
+            for tn, tt, tv in (tree['vars'] if tree else []):
+                if not re.match(r'^skillName\d+$', tn) or not tv or not tv[0]:
+                    continue
+                sk = self.R.get(key_of(tv[0]))
+                spawn = [p for p in (getv(sk, 'spawnObjects') or []) if p] if sk is not None else []
+                if spawn:
+                    skills.add(key_of(tv[0]))
+                    pets.update(key_of(p) for p in spawn)
+        for k in sorted(pets):
+            pet = self.R.get(k)
+            if pet is None or k.startswith(NS):
+                continue
+            used = [i for i in range(1, 34) if get1(pet, 'skillName%d' % i, '')]
+            if any(key_of(get1(pet, 'skillName%d' % i, '')) == key_of(PET_PACE) for i in used):
+                continue
+            slot = (max(used) if used else 0) + 1
+            if slot > 33:
+                self.pet_ledger['no_slot'].append(k)
+                continue
+            setv(pet, 'skillName%d' % slot, r['name'])
+            setv(pet, 'skillLevel%d' % slot, [1, 2, 3], 0)
+            self.db.mark(pet['name'])
+            self.pet_ledger['pets'] += 1
+        self.pet_ledger.update(skills=len(skills), x=x, life=life, da=da, damage=dmg['offensivePhysicalModifier'],
+                               record=key_of(PET_PACE))
+        log('  hero pets: %d pets of %d summon skills on Legendary - damage x%g (physical +%g %%), life +%g %%, '
+            'defence +%g%s' % (self.pet_ledger['pets'], len(skills), round(x, 2), dmg['offensivePhysicalModifier'],
+                               life, da, ', no free skill slot: %d' % len(self.pet_ledger['no_slot'])
+                               if self.pet_ledger['no_slot'] else ''))
 
     def make_burden(self, cid, name, pct):
         """toggled ally aura on the companion: the whole party (hero, companions) deals pct % less total damage"""
@@ -1844,8 +1926,22 @@ class Builder(object):
     def run(self):
         import tweaks                # the player's own database tweaks go under everything we build
         self.tweak_touched, self.tweaks_done = tweaks.apply(self.db, log)
+        tweak_texts = tweaks.texts()            # 1.8.5: tweaks may bring their own text tags
+        for tag_name, ru, en in tweak_texts:
+            self.tag(tag_name, ru, en)
+        if tweak_texts:
+            log('  tweak texts: %d tags' % len(tweak_texts))
+        # 1.9.0: item looks from the atelier - before anything reads worn gear (companions bake it, souls measure it)
+        import transmog
+        installed = self.base_arz[:-len(paths.BASE_SUFFIX)] if self.base_arz.endswith(paths.BASE_SUFFIX) else None
+        try:
+            self.transmog_made = transmog.apply(self.db, log, installed_arz=installed)
+        except transmog.TransmogError as e:
+            raise SystemExit(str(e))
+        self.tweak_touched |= self.transmog_made      # verify 1b: names, references, vanilla field types
         self.party_scale(PARTY_EXTRA)
         self.hero_life(HERO_LIFE)
+        self.hero_pets()
         self.owner_bonus = self.owner_pet_bonus()
         if self.owner_bonus:
             log('  pet bonuses of %s cancelled on the companions: %s' % (HERO_NAME, dict(self.owner_bonus)))
@@ -1899,6 +1995,8 @@ class Builder(object):
         self.db.arz.save(os.path.join(OUT, 'database.arz'), level=1)   # rebuilt on every change: speed over size
         save_registry(self.registry, self.folders)
         with open(os.path.join(OUT, 'companions.txt'), 'w', encoding='utf-8') as f:
+            if DIFFICULTY_NOTE:
+                f.write('\n'.join(DIFFICULTY_NOTE) + '\n\n')
             for name, L, g, sk, dr, gear, skipped, wired in self.report:
                 f.write('== %s (level %d, %s)\n' % (name, L, g))
                 f.write('   skills (slot order, AI role):\n' + ''.join('     %2d %-44s L%-3s %s\n' % (i, a, b, c)
@@ -1986,10 +2084,12 @@ def inputs_fingerprint():
         h.update(json.dumps(data, sort_keys=True, default=str).encode('utf-8'))
     # which deleted heroes are still referenced decides what is kept and what is cleaned up
     h.update(json.dumps(sorted(referenced_cids())).encode('utf-8'))
-    import tweaks
+    import tweaks, transmog
     h.update(tweaks.fingerprint().encode('utf-8'))
-    h.update(('party burden %d, hero life %g, boss %g, damage %g, hero %s, party %g, drops %s' % (
-        party_burden(), HERO_LIFE, HERO_BOSS, HERO_DAMAGE, HERO_NAME, PARTY_EXTRA, drop_chances())).encode('utf-8'))
+    h.update(transmog.fingerprint().encode('utf-8'))   # 1.9.0: item looks from the atelier
+    h.update(('party burden %d, hero life %g, boss %g, damage %g, hero %s, party %g, drops %s, pets %g' % (
+        party_burden(), HERO_LIFE, HERO_BOSS, HERO_DAMAGE, HERO_NAME, PARTY_EXTRA, drop_chances(),
+        PET_POWER)).encode('utf-8'))
     import souls
     h.update(souls.fingerprint().encode('utf-8'))      # 1.6.0: soul settings and the hero's level
     return h.hexdigest()
